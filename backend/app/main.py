@@ -6,16 +6,15 @@ import re
 import time
 import uuid
 from collections import Counter, defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from jinja2 import Environment
 from jose import jwt
 from pydantic import BaseModel, EmailStr, Field
-
-app = FastAPI(title="ScholarFlow AI Enterprise")
 
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 JWT_ALGORITHM = "HS256"
@@ -26,6 +25,31 @@ refresh_tokens_by_user: dict[str, str] = {}
 service_registry: dict[str, dict[str, Any]] = {}
 subscriptions: dict[str, str] = defaultdict(lambda: "free")
 app_started_at = time.time()
+app_instance_id = os.getenv("SERVICE_INSTANCE_ID", f"core-{uuid.uuid4()}")
+app_service_name = os.getenv("SERVICE_NAME", "core")
+app_metadata_tags = [tag for tag in os.getenv("SERVICE_METADATA_TAGS", "core,fastapi,scholarflow").split(",") if tag]
+plagiarism_events: list[dict[str, Any]] = []
+doc_crdt_state: dict[str, dict[str, Any]] = defaultdict(lambda: {"clock": 0, "text": "", "cursor": {}})
+
+
+def register_self() -> None:
+    service_registry[app_instance_id] = {
+        "instance_id": app_instance_id,
+        "service_name": app_service_name,
+        "metadata_tags": app_metadata_tags,
+        "uptime_seconds": 0,
+        "request_latency_ms": 12,
+        "error_rate": 0.0,
+    }
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    register_self()
+    yield
+
+
+app = FastAPI(title="ScholarFlow AI Enterprise", lifespan=lifespan)
 
 
 class RegisterServiceRequest(BaseModel):
@@ -52,6 +76,14 @@ class SimilarityRequest(BaseModel):
 
 class RemediationRequest(BaseModel):
     flagged_sentences: list[str]
+
+
+class CrdtOperation(BaseModel):
+    op_id: str
+    actor_id: str
+    timestamp: int
+    text_patch: str = ""
+    cursor_position: int = 0
 
 
 class CitationClaim(BaseModel):
@@ -90,14 +122,40 @@ def _split_sentences(text: str) -> list[str]:
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
 
 
+def _trace_id_from_request(headers: dict[str, str]) -> str:
+    traceparent = headers.get("traceparent", "")
+    if traceparent:
+        parts = traceparent.split("-")
+        if len(parts) >= 2 and parts[1]:
+            return parts[1]
+    return headers.get("x-request-id", str(uuid.uuid4()))
+
+
+def _merge_crdt_operation(doc_id: str, operation: CrdtOperation) -> dict[str, Any]:
+    state = doc_crdt_state[doc_id]
+    state["clock"] = max(state["clock"], operation.timestamp) + 1
+    if operation.text_patch:
+        state["text"] = f'{state["text"]}{operation.text_patch}'
+    state["cursor"][operation.actor_id] = operation.cursor_position
+    return {"doc_id": doc_id, "clock": state["clock"], "text": state["text"], "cursor": state["cursor"]}
+
+
+@app.middleware("http")
+async def trace_middleware(request: Request, call_next):
+    trace_id = _trace_id_from_request(dict(request.headers))
+    response = await call_next(request)
+    response.headers["X-Trace-Id"] = trace_id
+    return response
+
+
 @app.get("/core/health")
 def core_health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "service": "core",
+        "service": app_service_name,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "instance_id": f"core-{uuid.uuid4()}",
-        "metadata_tags": ["core", "fastapi", "scholarflow"],
+        "instance_id": app_instance_id,
+        "metadata_tags": app_metadata_tags,
     }
 
 
@@ -178,7 +236,20 @@ def plagiarism_similarity(body: SimilarityRequest) -> dict[str, Any]:
 @app.post("/plagiarism/remediate")
 def plagiarism_remediate(body: RemediationRequest) -> dict[str, Any]:
     rewritten = [f"Rewritten: {s}" for s in body.flagged_sentences]
-    return {"rewritten": rewritten, "provider": "ollama-llama3-compatible"}
+    event = {
+        "event_id": str(uuid.uuid4()),
+        "event_type": "plagiarism.remediated",
+        "provider": "ollama-llama3-compatible",
+        "rewritten": rewritten,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    plagiarism_events.append(event)
+    return event
+
+
+@app.get("/plagiarism/events")
+def plagiarism_event_stream() -> dict[str, Any]:
+    return {"events": plagiarism_events}
 
 
 @app.post("/citations/validate")
@@ -205,11 +276,20 @@ async def collab_ws(doc_id: str, websocket: WebSocket) -> None:
     try:
         while True:
             payload = await websocket.receive_json()
+            merged = None
+            if {"op_id", "actor_id", "timestamp"}.issubset(payload.keys()):
+                merged = _merge_crdt_operation(doc_id, CrdtOperation(**payload))
             for peer in list(active_docs[doc_id]):
                 if peer is not websocket:
-                    await peer.send_json(payload)
+                    await peer.send_json({"operation": payload, "state": merged or doc_crdt_state[doc_id]})
     except WebSocketDisconnect:
         active_docs[doc_id].discard(websocket)
+
+
+@app.get("/collab/state/{doc_id}")
+def collab_state(doc_id: str) -> dict[str, Any]:
+    state = doc_crdt_state[doc_id]
+    return {"doc_id": doc_id, "clock": state["clock"], "text": state["text"], "cursor": state["cursor"]}
 
 
 @app.post("/export/pdf")

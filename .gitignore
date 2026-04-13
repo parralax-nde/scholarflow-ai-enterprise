@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 backend/app/chat_history.db
 .scholarflow/
+**/.scholarflow/
 
 # Node
 node_modules/

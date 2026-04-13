@@ -178,6 +178,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="ScholarFlow AI Enterprise", lifespan=lifespan)
+_init_chat_db()
 
 
 class RegisterServiceRequest(BaseModel):

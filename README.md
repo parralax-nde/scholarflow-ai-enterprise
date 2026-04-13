@@ -1,2 +1,31 @@
-# scholarflow-ai-enterprise
-An enterprise-grade, AI-powered research proposal generation platform designed for high-volume academic and industrial workflows, featuring automated plagiarism detection, citation management, and collaborative authoring.
+# ScholarFlow AI Enterprise
+
+Enterprise-ready project scaffold that implements the required modules from the issue specification:
+
+- **Backend (FastAPI)**: core health/registry, OAuth callback + JWT/RBAC scopes, plagiarism similarity + remediation, citation validation, collaboration WebSocket broadcast, export endpoint, billing webhook, admin health summary.
+- **Frontend (React + TypeScript)**: design-tokenized responsive layout, animated sidebar, workspace split panes, skeleton shimmer loader, mobile bottom navigation, and impact metrics chart.
+
+## Backend
+
+```bash
+cd /home/runner/work/scholarflow-ai-enterprise/scholarflow-ai-enterprise/backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+## Frontend
+
+```bash
+cd /home/runner/work/scholarflow-ai-enterprise/scholarflow-ai-enterprise/frontend
+npm install
+npm run dev
+```
+
+## Tests
+
+```bash
+cd /home/runner/work/scholarflow-ai-enterprise/scholarflow-ai-enterprise/backend
+pytest -q
+```

@@ -1,106 +1,74 @@
-import { FormEvent, useRef, useState, useEffect } from 'react'
+import { FormEvent, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import ScholarFlowLogo from './ScholarFlowLogo'
-import { colors, typography, spacing } from './design-system'
-import './App.css'
 
 type Message = {
   id: string
   role: 'user' | 'assistant'
   content: string
-  timestamp?: string
 }
 
-type ResearchProject = {
+type Conversation = {
   id: string
   title: string
-  description: string
-  taskCount: number
   messageCount: number
-  lastUpdated: string
-  createdAt: string
+  dateLabel: string
 }
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? '/api'
 const defaultModel = import.meta.env.VITE_OLLAMA_MODEL ?? 'gemma4:e2b'
 
-export default function App() {
-  // Projects & UI state
-  const [projects, setProjects] = useState<ResearchProject[]>([])
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+const conversations: Conversation[] = [
+  { id: '1', title: 'Building an F1 car.', messageCount: 7, dateLabel: 'Today' },
+  { id: '2', title: 'Text Chat Abbreviations Meaning.', messageCount: 3, dateLabel: 'Today' },
+  { id: '3', title: 'Open-source alternatives for speech recognition.', messageCount: 11, dateLabel: 'Today' },
+  { id: '4', title: 'F1 car design and winners.', messageCount: 11, dateLabel: 'Today' },
+  { id: '5', title: "Hummer's Iconic Look", messageCount: 5, dateLabel: 'Today' },
+  { id: '6', title: "Description of Earth's Appearance", messageCount: 5, dateLabel: 'Today' },
+]
 
-  // Chat state
+const docxReviewLines = [
+  'PALADIN',
+  'The process of building an F1 car uses advanced engineering techniques and precision manufacturing.',
+  'It starts with computer-aided design, where engineers model aerodynamic surfaces for speed and control.',
+  'A lightweight carbon-fiber monocoque forms the center of the car and anchors suspension, power unit, and safety structures.',
+  'Teams run wind-tunnel and CFD testing to tune drag, downforce, and cooling efficiency before production.',
+  'Final assembly requires close collaboration between designers, race engineers, and specialized technicians.',
+]
+
+export default function App() {
+  const [activeConversationId, setActiveConversationId] = useState(conversations[0].id)
   const [messages, setMessages] = useState<Message[]>([
     {
-      id: crypto.randomUUID(),
+      id: 'sys-1',
       role: 'assistant',
       content:
-        '# Welcome to ScholarFlow\n\nAsk me to help with:\n- **Literature synthesis** - Compile and summarize research papers\n- **Citation validation** - Check claims against source materials\n- **Proposal refinement** - Improve research proposals\n\nLet\'s build your research together.',
-      timestamp: new Date().toISOString(),
+        'Building an F1 car usually starts with advanced aerodynamic design, material simulations, and iterative prototyping.',
+    },
+    {
+      id: 'usr-1',
+      role: 'user',
+      content: 'show me what an f1 car looks like',
+    },
+    {
+      id: 'sys-2',
+      role: 'assistant',
+      content: 'Here is a visual concept and a short explanation of the major body zones and aero elements.',
     },
   ])
   const [prompt, setPrompt] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
-  const [status, setStatus] = useState(`Ready · ${defaultModel}`)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const [status, setStatus] = useState(`Connected · ${defaultModel}`)
+  const inputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
-  // Load projects on mount
-  useEffect(() => {
-    loadProjects()
-  }, [])
-
-  // Scroll to bottom on new messages
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-
-  const loadProjects = async () => {
-    try {
-      // Mock projects - in production, fetch from backend
-      const mockProjects: ResearchProject[] = [
-        {
-          id: '1',
-          title: 'Transformer Architecture Analysis',
-          description: 'Deep dive into attention mechanisms and modern LLM architectures',
-          taskCount: 7,
-          messageCount: 42,
-          lastUpdated: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-          createdAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-        },
-        {
-          id: '2',
-          title: 'Literature Review: Retrieval-Augmented Generation',
-          description: 'Comprehensive synthesis of RAG techniques and applications',
-          taskCount: 5,
-          messageCount: 28,
-          lastUpdated: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-          createdAt: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(),
-        },
-        {
-          id: '3',
-          title: 'Fine-tuning vs Prompting: Comparative Study',
-          description: 'Evaluate effectiveness of different instruction tuning approaches',
-          taskCount: 3,
-          messageCount: 15,
-          lastUpdated: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-          createdAt: new Date(Date.now() - 21 * 24 * 60 * 60 * 1000).toISOString(),
-        },
-      ]
-      setProjects(mockProjects)
-      if (!selectedProjectId && mockProjects.length > 0) {
-        setSelectedProjectId(mockProjects[0].id)
-      }
-    } catch (error) {
-      console.error('Failed to load projects:', error)
-    }
-  }
-
-  const selectedProject = projects.find(p => p.id === selectedProjectId)
+  const activeConversation = useMemo(
+    () => conversations.find((conversation) => conversation.id === activeConversationId) ?? conversations[0],
+    [activeConversationId],
+  )
 
   const appendAssistantChunk = (assistantId: string, chunk: string) => {
-    setMessages(prev =>
-      prev.map(message =>
+    setMessages((prev) =>
+      prev.map((message) =>
         message.id === assistantId
           ? { ...message, content: `${message.content}${chunk}` }
           : message,
@@ -116,25 +84,23 @@ export default function App() {
       id: crypto.randomUUID(),
       role: 'user',
       content: prompt.trim(),
-      timestamp: new Date().toISOString(),
     }
     const assistantId = crypto.randomUUID()
     const assistantMessage: Message = {
       id: assistantId,
       role: 'assistant',
       content: '',
-      timestamp: new Date().toISOString(),
     }
 
     const conversationPayload = [
-      ...messages.map(m => ({ role: m.role, content: m.content })),
+      ...messages.map((m) => ({ role: m.role, content: m.content })),
       { role: 'user' as const, content: userMessage.content },
     ]
 
-    setMessages(prev => [...prev, userMessage, assistantMessage])
+    setMessages((prev) => [...prev, userMessage, assistantMessage])
     setPrompt('')
     setIsStreaming(true)
-    setStatus('Researching...')
+    setStatus('Generating...')
 
     try {
       const response = await fetch(`${apiBase}/ai/chat/stream`, {
@@ -209,176 +175,104 @@ export default function App() {
       setStatus(error instanceof Error ? `Error: ${error.message}` : 'Network error')
     } finally {
       setIsStreaming(false)
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
       inputRef.current?.focus()
     }
   }
 
   return (
-    <div className="app-container">
-      {/* LEFT SIDEBAR */}
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <div className="logo-section">
-            <ScholarFlowLogo size="md" />
-            <div className="logo-text">
-              <h1>ScholarFlow</h1>
-              <p>Research Copilot</p>
-            </div>
+    <div className="workspace-shell">
+      <div className="workspace-window">
+        <header className="browser-bar">
+          <div className="traffic-lights">
+            <span />
+            <span />
+            <span />
           </div>
-        </div>
+          <div className="address-pill">localhost</div>
+        </header>
 
-        <button className="new-research-btn">
-          <span>+ New Research</span>
-        </button>
+        <div className="workspace-grid">
+          <aside className="conversations-pane">
+            <div className="brand-lockup">
+              <div className="brand-mark">U</div>
+              <div className="brand-copy">
+                <strong>UNIS</strong>
+              </div>
+            </div>
 
-        <nav className="sidebar-nav">
-          <div className="nav-section">
-            <h3>Research Projects</h3>
-            <div className="projects-list">
-              {projects.map(project => (
+            <button className="profile-chip">@pegasus</button>
+            <button className="new-conversation-btn">+ NEW CONVERSATION</button>
+
+            <div className="conversation-list">
+              {conversations.map((conversation) => (
                 <button
-                  key={project.id}
-                  className={`project-item ${selectedProjectId === project.id ? 'active' : ''}`}
-                  onClick={() => setSelectedProjectId(project.id)}
+                  key={conversation.id}
+                  className={`conversation-row ${activeConversationId === conversation.id ? 'active' : ''}`}
+                  onClick={() => setActiveConversationId(conversation.id)}
                 >
-                  <div className="project-title">{project.title}</div>
-                  <div className="project-meta">
-                    <span className="task-count">{project.taskCount} tasks</span>
-                    <span className="message-count">{project.messageCount} msgs</span>
+                  <span className="conversation-avatar">OX</span>
+                  <div>
+                    <div className="conversation-title">{conversation.title}</div>
+                    <div className="conversation-meta">
+                      {conversation.dateLabel} · {conversation.messageCount} messages
+                    </div>
                   </div>
                 </button>
               ))}
             </div>
-          </div>
-        </nav>
+          </aside>
 
-        <div className="sidebar-footer">
-          <div className="user-section">
-            <div className="user-avatar">👤</div>
-            <span>Account</span>
-          </div>
-        </div>
-      </aside>
-
-      {/* MIDDLE COLUMN - Project Detail Header */}
-      <div className="middle-column">
-        {selectedProject ? (
-          <div className="project-header">
-            <h2>{selectedProject.title}</h2>
-            <p className="project-description">{selectedProject.description}</p>
-            <div className="project-stats">
-              <span>
-                📅{' '}
-                {new Date(selectedProject.createdAt).toLocaleDateString('en-US', {
-                  month: 'short',
-                  day: 'numeric',
-                  year: 'numeric',
-                })}
-              </span>
-              <span>💬 {selectedProject.messageCount} messages</span>
-            </div>
-          </div>
-        ) : null}
-      </div>
-
-      {/* RIGHT COLUMN - Chat Interface */}
-      <main className="chat-column">
-        <div className="chat-header">
-          <div className="status-badge">
-            <span className="status-dot"></span>
-            {status}
-          </div>
-        </div>
-
-        <div className="messages-container">
-          {messages.map(message => (
-            <div
-              key={message.id}
-              className={`message message-${message.role}`}
-            >
-              {message.role === 'assistant' ? (
-                <div className="message-avatar assistant-avatar">🤖</div>
-              ) : (
-                <div className="message-avatar user-avatar">👤</div>
-              )}
-              <div className="message-content">
-                <ReactMarkdown
-                  components={{
-                    h1: ({ node, ...props }) => (
-                      <h1 style={{ fontSize: '1.5em', marginTop: '0.5em', marginBottom: '0.5em' }} {...props} />
-                    ),
-                    h2: ({ node, ...props }) => (
-                      <h2 style={{ fontSize: '1.25em', marginTop: '0.4em', marginBottom: '0.4em' }} {...props} />
-                    ),
-                    h3: ({ node, ...props }) => (
-                      <h3 style={{ fontSize: '1.1em', marginTop: '0.3em', marginBottom: '0.3em' }} {...props} />
-                    ),
-                    p: ({ node, ...props }) => <p style={{ margin: '0.5em 0' }} {...props} />,
-                    ul: ({ node, ...props }) => (
-                      <ul style={{ margin: '0.5em 0', paddingLeft: '1.5em' }} {...props} />
-                    ),
-                    ol: ({ node, ...props }) => (
-                      <ol style={{ margin: '0.5em 0', paddingLeft: '1.5em' }} {...props} />
-                    ),
-                    code: (props) => <code {...props} />,
-                    pre: (props) => (
-                      <pre
-                        style={{
-                          backgroundColor: colors.gray900,
-                          color: colors.white,
-                          padding: '1em',
-                          borderRadius: '0.5em',
-                          overflow: 'auto',
-                          margin: '0.5em 0',
-                        }}
-                        {...props}
-                      />
-                    ),
-                    blockquote: ({ node, ...props }) => (
-                      <blockquote
-                        style={{
-                          borderLeft: `4px solid ${colors.primary}`,
-                          paddingLeft: '1em',
-                          margin: '0.5em 0',
-                          color: colors.gray600,
-                        }}
-                        {...props}
-                      />
-                    ),
-                  }}
-                >
-                  {message.content}
-                </ReactMarkdown>
+          <main className="chat-pane">
+            <div className="chat-titlebar">
+              <div className="chat-title-block">
+                <p className="chat-label">CONVERSATION</p>
+                <h1>{activeConversation.title}</h1>
+                <p className="chat-meta">MARCH 11, 2023 · 7 MESSAGES</p>
               </div>
+              <button className="archive-button">ARCHIVE</button>
             </div>
-          ))}
-          <div ref={messagesEndRef} />
-        </div>
 
-        <form className="message-composer" onSubmit={sendPrompt}>
-          <textarea
-            ref={inputRef}
-            value={prompt}
-            onChange={e => setPrompt(e.target.value)}
-            placeholder="Ask about literature synthesis, citation validation, proposal refinement..."
-            rows={3}
-            disabled={isStreaming}
-            onKeyDown={e => {
-              if (e.key === 'Enter' && e.ctrlKey) {
-                sendPrompt(e as any)
-              }
-            }}
-          />
-          <div className="composer-actions">
-            <button type="button" className="attach-btn" disabled={isStreaming}>
-              📎
-            </button>
-            <button type="submit" className="send-btn" disabled={isStreaming || !prompt.trim()}>
-              {isStreaming ? '⏳' : '→'} {isStreaming ? 'Researching' : 'Send'}
-            </button>
-          </div>
-        </form>
-      </main>
+            <div className="chat-thread">
+              {messages.map((message) => (
+                <div key={message.id} className={`chat-message ${message.role}`}>
+                  <span className="speaker-tag">{message.role === 'assistant' ? 'PALADIN' : 'YOU'}</span>
+                  <div className="bubble">
+                    <ReactMarkdown>{message.content}</ReactMarkdown>
+                  </div>
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+
+            <form className="composer" onSubmit={sendPrompt}>
+              <input
+                ref={inputRef}
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder="Message this conversation"
+                disabled={isStreaming}
+              />
+              <button type="submit" disabled={isStreaming || !prompt.trim()}>
+                {isStreaming ? 'SENDING…' : 'SEND'}
+              </button>
+            </form>
+            <p className="status-line">{status}</p>
+          </main>
+
+          <aside className="docx-pane">
+            <div className="docx-header">
+              <h2>DOCX REVIEW</h2>
+              <span>Draft v3.docx</span>
+            </div>
+            <div className="docx-paper">
+              {docxReviewLines.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </div>
+          </aside>
+        </div>
+      </div>
     </div>
   )
 }

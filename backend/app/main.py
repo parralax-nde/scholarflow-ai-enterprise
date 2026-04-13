@@ -7,11 +7,13 @@ import math
 import os
 import re
 import secrets
+import sqlite3
 import time
 import uuid
 from collections import Counter, defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -26,6 +28,7 @@ JWT_ALGORITHM = "HS256"
 ACCESS_TTL_SECONDS = 3600
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
+CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path(__file__).with_name("chat_history.db"))))
 
 users_by_google_sub: dict[str, dict[str, Any]] = {}
 users_by_email: dict[str, dict[str, Any]] = {}
@@ -40,6 +43,120 @@ plagiarism_events: list[dict[str, Any]] = []
 doc_crdt_state: dict[str, dict[str, Any]] = defaultdict(
     lambda: {"clock": 0, "text": "", "cursor": {}, "operations": [], "applied_operation_ids": set()}
 )
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _connect_chat_db() -> sqlite3.Connection:
+    return sqlite3.connect(CHAT_DB_PATH)
+
+
+def _init_chat_db() -> None:
+    CHAT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _connect_chat_db() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC)")
+
+
+def _conversation_exists(conversation_id: str) -> bool:
+    with _connect_chat_db() as conn:
+        row = conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+    return bool(row)
+
+
+def _create_conversation(title: str = "New chat") -> dict[str, Any]:
+    conversation_id = str(uuid.uuid4())
+    now = _utc_now_iso()
+    with _connect_chat_db() as conn:
+        conn.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (conversation_id, title, now, now),
+        )
+    return {"id": conversation_id, "title": title, "message_count": 0, "updated_at": now}
+
+
+def _derive_conversation_title(messages: list[dict[str, str]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            content = " ".join(message.get("content", "").strip().split())
+            if content:
+                return content[:60]
+    return "New chat"
+
+
+def _add_message(conversation_id: str, role: str, content: str) -> dict[str, Any]:
+    message_id = str(uuid.uuid4())
+    now = _utc_now_iso()
+    with _connect_chat_db() as conn:
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+            (message_id, conversation_id, role, content, now),
+        )
+        conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
+        row = conn.execute("SELECT title FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+        if row and row[0].strip().lower() == "new chat" and role == "user":
+            conn.execute("UPDATE conversations SET title = ? WHERE id = ?", (content[:60], conversation_id))
+    return {"id": message_id, "conversation_id": conversation_id, "role": role, "content": content, "created_at": now}
+
+
+def _list_conversations() -> list[dict[str, Any]]:
+    with _connect_chat_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.id, c.title, c.updated_at, COUNT(m.id) AS message_count
+            FROM conversations c
+            LEFT JOIN messages m ON m.conversation_id = c.id
+            GROUP BY c.id
+            ORDER BY c.updated_at DESC
+            """
+        ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "title": row[1],
+            "updated_at": row[2],
+            "message_count": row[3],
+        }
+        for row in rows
+    ]
+
+
+def _list_messages(conversation_id: str) -> list[dict[str, Any]]:
+    with _connect_chat_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, role, content, created_at
+            FROM messages
+            WHERE conversation_id = ?
+            ORDER BY created_at ASC
+            """,
+            (conversation_id,),
+        ).fetchall()
+    return [{"id": row[0], "role": row[1], "content": row[2], "created_at": row[3]} for row in rows]
 
 
 def register_self() -> None:

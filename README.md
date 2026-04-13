@@ -32,6 +32,7 @@ Primary endpoints:
 
 2. **Auth Service**
    - Google OAuth callback contract (`/auth/oauth/google/callback`)
+   - Email/password register and login contracts (`/auth/register`, `/auth/login`)
    - JWT (1 hour), refresh token rotation, RBAC scopes by tier
 
 3. **Frontend Service**

@@ -42,6 +42,55 @@ def test_google_oauth_callback_issues_1h_jwt_and_refresh_token():
     assert payload["refresh_token"]
 
 
+def test_email_password_register_and_login_issue_tokens():
+    register = client.post(
+        "/auth/register",
+        json={
+            "email": "password-user@example.com",
+            "name": "Password User",
+            "password": "StrongPass123!",
+            "tier": "free",
+        },
+    )
+    assert register.status_code == 200
+    register_payload = register.json()
+    assert register_payload["user"]["email"] == "password-user@example.com"
+    assert register_payload["user"]["auth_provider"] == "password"
+    decoded_register = jwt.decode(register_payload["access_token"], JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    assert decoded_register["role"] == "free"
+    assert decoded_register["exp"] - decoded_register["iat"] == ACCESS_TTL_SECONDS
+
+    login = client.post(
+        "/auth/login",
+        json={"email": "password-user@example.com", "password": "StrongPass123!"},
+    )
+    assert login.status_code == 200
+    login_payload = login.json()
+    decoded_login = jwt.decode(login_payload["access_token"], JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    assert decoded_login["email"] == "password-user@example.com"
+    assert login_payload["refresh_token"]
+
+
+def test_email_password_login_rejects_invalid_credentials():
+    register = client.post(
+        "/auth/register",
+        json={
+            "email": "invalid-login@example.com",
+            "name": "Invalid Login",
+            "password": "StrongPass123!",
+            "tier": "free",
+        },
+    )
+    assert register.status_code == 200
+
+    bad_login = client.post(
+        "/auth/login",
+        json={"email": "invalid-login@example.com", "password": "WrongPass123!"},
+    )
+    assert bad_login.status_code == 401
+    assert bad_login.json()["detail"] == "invalid credentials"
+
+
 def test_plagiarism_similarity_flags_high_similarity_sentences():
     response = client.post(
         "/plagiarism/similarity",

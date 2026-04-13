@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import math
 import os
 import re
+import secrets
 import time
 import uuid
 from collections import Counter, defaultdict
@@ -21,6 +24,7 @@ JWT_ALGORITHM = "HS256"
 ACCESS_TTL_SECONDS = 3600
 
 users_by_google_sub: dict[str, dict[str, Any]] = {}
+users_by_email: dict[str, dict[str, Any]] = {}
 refresh_tokens_by_user: dict[str, str] = {}
 service_registry: dict[str, dict[str, Any]] = {}
 subscriptions: dict[str, str] = defaultdict(lambda: "free")
@@ -69,6 +73,18 @@ class OAuthCallbackRequest(BaseModel):
     code: str
     profile: GoogleProfile
     tier: str = Field(default="free", pattern="^(free|enterprise)$")
+
+
+class EmailPasswordRegisterRequest(BaseModel):
+    email: EmailStr
+    name: str
+    password: str = Field(min_length=8)
+    tier: str = Field(default="free", pattern="^(free|enterprise)$")
+
+
+class EmailPasswordLoginRequest(BaseModel):
+    email: EmailStr
+    password: str
 
 
 class SimilarityRequest(BaseModel):
@@ -131,6 +147,45 @@ def _trace_id_from_request(headers: dict[str, str]) -> str:
         if len(parts) >= 2 and parts[1]:
             return parts[1]
     return headers.get("x-request-id", str(uuid.uuid4()))
+
+
+def _hash_password(password: str, salt: str) -> str:
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    return digest.hex()
+
+
+def _verify_password(password: str, salt: str, expected_hash: str) -> bool:
+    return hmac.compare_digest(_hash_password(password, salt), expected_hash)
+
+
+def _scopes_for_role(role: str) -> list[str]:
+    scopes = ["proposal:read", "proposal:write"]
+    if role == "enterprise":
+        scopes.append("plagiarism:access")
+    return scopes
+
+
+def _issue_tokens_for_user(user: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    access_payload = {
+        "sub": user["id"],
+        "email": user["email"],
+        "role": user["role"],
+        "scopes": _scopes_for_role(user["role"]),
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=ACCESS_TTL_SECONDS)).timestamp()),
+    }
+    access_token = jwt.encode(access_payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+    refresh_token = str(uuid.uuid4())
+    refresh_tokens_by_user[user["id"]] = refresh_token
+    return {
+        "user": user,
+        "access_token": access_token,
+        "expires_in": ACCESS_TTL_SECONDS,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+    }
 
 
 def _merge_crdt_operation(doc_id: str, operation: CrdtOperation) -> dict[str, Any]:
@@ -198,9 +253,6 @@ def list_services() -> list[dict[str, Any]]:
 @app.post("/auth/oauth/google/callback")
 def oauth_google_callback(body: OAuthCallbackRequest) -> dict[str, Any]:
     role = "enterprise" if body.tier == "enterprise" else "free"
-    scopes = ["proposal:read", "proposal:write"]
-    if role == "enterprise":
-        scopes.append("plagiarism:access")
 
     user = users_by_google_sub.setdefault(
         body.profile.sub,
@@ -213,27 +265,44 @@ def oauth_google_callback(body: OAuthCallbackRequest) -> dict[str, Any]:
     )
     user["role"] = role
 
-    now = datetime.now(timezone.utc)
-    access_payload = {
-        "sub": user["id"],
-        "email": user["email"],
+    return _issue_tokens_for_user(user)
+
+
+@app.post("/auth/register")
+def auth_register(body: EmailPasswordRegisterRequest) -> dict[str, Any]:
+    email_key = body.email.lower()
+    if email_key in users_by_email:
+        raise HTTPException(status_code=409, detail="email already registered")
+
+    role = "enterprise" if body.tier == "enterprise" else "free"
+    salt = secrets.token_hex(16)
+    user_id = str(uuid.uuid4())
+    user_record = {
+        "id": user_id,
+        "email": email_key,
+        "name": body.name,
         "role": role,
-        "scopes": scopes,
-        "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(seconds=ACCESS_TTL_SECONDS)).timestamp()),
+        "auth_provider": "password",
+        "password_salt": salt,
+        "password_hash": _hash_password(body.password, salt),
     }
-    access_token = jwt.encode(access_payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    users_by_email[email_key] = user_record
+    public_user = {k: v for k, v in user_record.items() if not k.startswith("password_")}
+    return _issue_tokens_for_user(public_user)
 
-    refresh_token = str(uuid.uuid4())
-    refresh_tokens_by_user[user["id"]] = refresh_token
 
-    return {
-        "user": user,
-        "access_token": access_token,
-        "expires_in": ACCESS_TTL_SECONDS,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-    }
+@app.post("/auth/login")
+def auth_login(body: EmailPasswordLoginRequest) -> dict[str, Any]:
+    email_key = body.email.lower()
+    user_record = users_by_email.get(email_key)
+    if not user_record:
+        raise HTTPException(status_code=401, detail="invalid credentials")
+
+    if not _verify_password(body.password, user_record["password_salt"], user_record["password_hash"]):
+        raise HTTPException(status_code=401, detail="invalid credentials")
+
+    public_user = {k: v for k, v in user_record.items() if not k.startswith("password_")}
+    return _issue_tokens_for_user(public_user)
 
 
 @app.post("/plagiarism/similarity")

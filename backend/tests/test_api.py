@@ -167,6 +167,63 @@ def test_ai_chat_stream_returns_ndjson_tokens(monkeypatch):
     assert lines[3] == {"type": "done"}
 
 
+def test_ai_conversations_and_messages_are_persisted(monkeypatch):
+    class MockStreamResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def aiter_lines(self):
+            yield '{"message":{"content":"Stored reply"},"done":false}'
+            yield '{"done":true}'
+
+        async def aread(self):
+            return b""
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        def stream(self, method, url, json):
+            return MockStreamResponse()
+
+    monkeypatch.setattr(main_module.httpx, "AsyncClient", MockAsyncClient)
+
+    conversation = client.post("/ai/conversations", json={})
+    assert conversation.status_code == 200
+    conversation_id = conversation.json()["id"]
+
+    response = client.post(
+        "/ai/chat/stream",
+        json={
+            "conversation_id": conversation_id,
+            "messages": [{"role": "user", "content": "Persist this conversation"}],
+        },
+    )
+    assert response.status_code == 200
+
+    listed = client.get("/ai/conversations")
+    assert listed.status_code == 200
+    assert any(item["id"] == conversation_id for item in listed.json())
+
+    messages = client.get(f"/ai/conversations/{conversation_id}/messages")
+    assert messages.status_code == 200
+    body = messages.json()
+    assert body["conversation_id"] == conversation_id
+    assert any(item["role"] == "user" and "Persist this conversation" in item["content"] for item in body["messages"])
+    assert any(item["role"] == "assistant" and "Stored reply" in item["content"] for item in body["messages"])
+
+
 def test_crdt_merge_updates_state_clock_text_and_cursor():
     result = _merge_crdt_operation(
         "doc-1",

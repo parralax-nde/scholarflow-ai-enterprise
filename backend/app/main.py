@@ -172,6 +172,7 @@ def register_self() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    _init_chat_db()
     register_self()
     yield
 
@@ -215,6 +216,11 @@ class ChatMessage(BaseModel):
 
 class ChatStreamRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1)
+    conversation_id: str | None = None
+
+
+class ConversationCreateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=120)
 
 
 class SimilarityRequest(BaseModel):
@@ -435,8 +441,41 @@ def auth_login(body: EmailPasswordLoginRequest) -> dict[str, Any]:
     return _issue_tokens_for_user(public_user)
 
 
+@app.get("/ai/conversations")
+def ai_list_conversations() -> list[dict[str, Any]]:
+    return _list_conversations()
+
+
+@app.post("/ai/conversations")
+def ai_create_conversation(body: ConversationCreateRequest | None = None) -> dict[str, Any]:
+    title = "New chat"
+    if body and body.title and body.title.strip():
+        title = body.title.strip()[:120]
+    return _create_conversation(title=title)
+
+
+@app.get("/ai/conversations/{conversation_id}/messages")
+def ai_list_messages(conversation_id: str) -> dict[str, Any]:
+    if not _conversation_exists(conversation_id):
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return {"conversation_id": conversation_id, "messages": _list_messages(conversation_id)}
+
+
 @app.post("/ai/chat/stream")
 async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
+    conversation_id = body.conversation_id
+    if conversation_id:
+        if not _conversation_exists(conversation_id):
+            raise HTTPException(status_code=404, detail="conversation not found")
+    else:
+        conversation = _create_conversation(title=_derive_conversation_title([msg.model_dump() for msg in body.messages]))
+        conversation_id = conversation["id"]
+
+    user_messages = [message for message in body.messages if message.role == "user"]
+    latest_user_message = user_messages[-1].content.strip() if user_messages else ""
+    if latest_user_message:
+        _add_message(conversation_id, "user", latest_user_message)
+
     payload = {
         "model": OLLAMA_MODEL,
         "stream": True,
@@ -445,6 +484,7 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
 
     async def stream_generator():
         yield json.dumps({"type": "meta", "model": OLLAMA_MODEL}) + "\n"
+        assistant_chunks: list[str] = []
         try:
             timeout = httpx.Timeout(timeout=90.0, connect=10.0)
             async with httpx.AsyncClient(timeout=timeout) as http_client:
@@ -468,9 +508,13 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                             continue
                         content = chunk.get("message", {}).get("content", "")
                         if content:
+                            assistant_chunks.append(content)
                             yield json.dumps({"type": "token", "content": content}) + "\n"
                         if chunk.get("done"):
                             yield json.dumps({"type": "done"}) + "\n"
+            assistant_content = "".join(assistant_chunks).strip()
+            if assistant_content:
+                _add_message(conversation_id, "assistant", assistant_content)
         except httpx.HTTPError as e:
             yield json.dumps({"type": "error", "error": f"ollama unavailable: {str(e)}"}) + "\n"
 

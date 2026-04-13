@@ -114,7 +114,7 @@ def test_plagiarism_remediation_publishes_event():
     body = response.json()
     assert body["event_type"] == "plagiarism.remediated"
     assert body["provider"] == "ollama"
-    assert body["model"] == "gemma4:2b"
+    assert body["model"] == "gemma4:e2b"
     events = client.get("/plagiarism/events").json()["events"]
     assert any(event["event_id"] == body["event_id"] for event in events)
 
@@ -150,7 +150,7 @@ def test_ai_chat_stream_returns_ndjson_tokens(monkeypatch):
         def stream(self, method, url, json):
             assert method == "POST"
             assert url.endswith("/api/chat")
-            assert json["model"] == "gemma4:2b"
+            assert json["model"] == "gemma4:e2b"
             return MockStreamResponse()
 
     monkeypatch.setattr(main_module.httpx, "AsyncClient", MockAsyncClient)
@@ -161,7 +161,7 @@ def test_ai_chat_stream_returns_ndjson_tokens(monkeypatch):
     )
     assert response.status_code == 200
     lines = [json.loads(line) for line in response.text.strip().splitlines()]
-    assert lines[0] == {"type": "meta", "model": "gemma4:2b"}
+    assert lines[0] == {"type": "meta", "model": "gemma4:e2b"}
     assert lines[1] == {"type": "token", "content": "Hello"}
     assert lines[2] == {"type": "token", "content": " world"}
     assert lines[3] == {"type": "done"}

@@ -46,7 +46,7 @@ Primary endpoints:
 
 5. **AI Generation Service**
    - Streaming chat endpoint (`/ai/chat/stream`) backed by Ollama
-   - Default model configured as `gemma4:2b` via `OLLAMA_MODEL`
+   - Default model configured as `gemma4:e2b` via `OLLAMA_MODEL`
 
 6. **Citation Manager**
    - Claim support categorization (`Supported`, `Partially Supported`, `Unsupported`)
@@ -80,7 +80,7 @@ Optional AI settings for local backend:
 
 ```bash
 export OLLAMA_BASE_URL=http://localhost:11434
-export OLLAMA_MODEL=gemma4:2b
+export OLLAMA_MODEL=gemma4:e2b
 ```
 
 ### Frontend

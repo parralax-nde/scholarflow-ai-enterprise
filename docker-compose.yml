@@ -7,6 +7,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       SERVICE_NAME: core
       SERVICE_METADATA_TAGS: core,auth,plagiarism,citation,collaboration,billing,admin
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: gemma4:2b
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/core/health')"]
       interval: 20s

@@ -36,32 +36,33 @@ Primary endpoints:
    - JWT (1 hour), refresh token rotation, RBAC scopes by tier
 
 3. **Frontend Service**
-   - Design tokens, responsive 12-column layout, breakpoints
-   - Framer Motion sidebar/drawer and mobile bottom nav
-   - Research workspace split pane + shimmer skeleton loader
+   - Advanced chat-style research copilot UI (sharp-corner, non-rounded design)
+   - Multi-turn generation flow with streaming response rendering
+   - Ollama model indicator and generation status surface
 
 4. **Plagiarism Engine**
    - Sentence-level cosine threshold detection (`> 0.8`)
-   - Remediation output + event stream (`/plagiarism/remediate`, `/plagiarism/events`)
+   - Remediation output + event stream (`/plagiarism/remediate`, `/plagiarism/events`) with configured model metadata
 
-5. **Citation Manager**
+5. **AI Generation Service**
+   - Streaming chat endpoint (`/ai/chat/stream`) backed by Ollama
+   - Default model configured as `gemma4:2b` via `OLLAMA_MODEL`
+
+6. **Citation Manager**
    - Claim support categorization (`Supported`, `Partially Supported`, `Unsupported`)
 
-6. **Collaboration Service**
+7. **Collaboration Service**
    - WebSocket broadcast (`/collab/ws/{doc_id}`)
    - CRDT-style merge state clock/cursor tracking (`/collab/state/{doc_id}`)
 
-7. **Export & Rendering**
+8. **Export & Rendering**
    - Jinja2-based template rendering for PDF media responses (`/export/pdf`)
 
-8. **Billing Service**
+9. **Billing Service**
    - Stripe webhook contract (`invoice.paid`, `subscription.deleted`)
 
-9. **Data Visualization**
-   - Chart.js dashboard metrics for citation impact + plagiarism risk
-
 10. **Admin Dashboard**
-    - Service health aggregate endpoint (`/admin/service-health`) with status icons in frontend UI
+     - Service health aggregate endpoint (`/admin/service-health`) with status icons in frontend UI
 
 ## Local dev without Docker
 
@@ -73,6 +74,13 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload
+```
+
+Optional AI settings for local backend:
+
+```bash
+export OLLAMA_BASE_URL=http://localhost:11434
+export OLLAMA_MODEL=gemma4:2b
 ```
 
 ### Frontend

@@ -7,6 +7,7 @@ type Message = {
 }
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? '/api'
+const defaultModel = import.meta.env.VITE_OLLAMA_MODEL ?? 'gemma4:2b'
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([
@@ -19,7 +20,7 @@ export default function App() {
   ])
   const [prompt, setPrompt] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
-  const [status, setStatus] = useState('Connected to Ollama · model gemma4:2b')
+  const [status, setStatus] = useState(`Connected to Ollama · model ${defaultModel}`)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const conversationPayload = useMemo(
@@ -94,8 +95,10 @@ export default function App() {
               newlineIndex = buffer.indexOf('\n')
               continue
             }
-            if (chunk.type === 'token' && chunk.content) appendAssistantChunk(assistantId, chunk.content)
-            if (chunk.type === 'token' && chunk.content) receivedToken = true
+            if (chunk.type === 'token' && chunk.content) {
+              appendAssistantChunk(assistantId, chunk.content)
+              receivedToken = true
+            }
             if (chunk.type === 'meta' && chunk.model) setStatus(`Connected to Ollama · model ${chunk.model}`)
             if (chunk.type === 'error') setStatus(chunk.error ? `Error: ${chunk.error}` : 'Stream error')
           }
@@ -124,7 +127,7 @@ export default function App() {
           <p className="eyebrow">ScholarFlow AI Enterprise</p>
           <h1>Research Copilot Conversation</h1>
         </div>
-        <div className="model-chip">gemma4:2b · streaming</div>
+        <div className="model-chip">{defaultModel} · streaming</div>
       </header>
 
       <main className="chat-layout">
@@ -132,7 +135,7 @@ export default function App() {
           <h2>Generation Context</h2>
           <p>Conversational drafting pipeline with real-time token streaming from Ollama.</p>
           <ul>
-            <li>Model: gemma4:2b</li>
+            <li>Model: {defaultModel}</li>
             <li>Transport: NDJSON stream</li>
             <li>Mode: multi-turn proposal generation</li>
           </ul>

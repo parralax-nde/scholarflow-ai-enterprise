@@ -333,12 +333,11 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             async with httpx.AsyncClient(timeout=timeout) as http_client:
                 async with http_client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=payload) as response:
                     if response.status_code >= 400:
-                        error_payload = await response.aread()
+                        await response.aread()
                         yield json.dumps(
                             {
                                 "type": "error",
                                 "error": f"ollama request failed ({response.status_code})",
-                                "details": error_payload.decode("utf-8", errors="ignore"),
                             }
                         ) + "\n"
                         return
@@ -355,8 +354,8 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                             yield json.dumps({"type": "token", "content": content}) + "\n"
                         if chunk.get("done"):
                             yield json.dumps({"type": "done"}) + "\n"
-        except httpx.HTTPError as exc:
-            yield json.dumps({"type": "error", "error": f"ollama unavailable: {exc}"}) + "\n"
+        except httpx.HTTPError:
+            yield json.dumps({"type": "error", "error": "ollama unavailable"}) + "\n"
 
     return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
 

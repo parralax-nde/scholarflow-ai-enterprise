@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import math
 import os
 import re
@@ -13,8 +14,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from jinja2 import Environment
 from jose import jwt
 from pydantic import BaseModel, EmailStr, Field
@@ -22,6 +24,8 @@ from pydantic import BaseModel, EmailStr, Field
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 JWT_ALGORITHM = "HS256"
 ACCESS_TTL_SECONDS = 3600
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:2b")
 
 users_by_google_sub: dict[str, dict[str, Any]] = {}
 users_by_email: dict[str, dict[str, Any]] = {}
@@ -85,6 +89,15 @@ class EmailPasswordRegisterRequest(BaseModel):
 class EmailPasswordLoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class ChatMessage(BaseModel):
+    role: str = Field(pattern="^(system|user|assistant)$")
+    content: str = Field(min_length=1)
+
+
+class ChatStreamRequest(BaseModel):
+    messages: list[ChatMessage] = Field(min_length=1)
 
 
 class SimilarityRequest(BaseModel):
@@ -305,6 +318,49 @@ def auth_login(body: EmailPasswordLoginRequest) -> dict[str, Any]:
     return _issue_tokens_for_user(public_user)
 
 
+@app.post("/ai/chat/stream")
+async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
+    payload = {
+        "model": OLLAMA_MODEL,
+        "stream": True,
+        "messages": [message.model_dump() for message in body.messages],
+    }
+
+    async def stream_generator():
+        yield json.dumps({"type": "meta", "model": OLLAMA_MODEL}) + "\n"
+        try:
+            timeout = httpx.Timeout(timeout=90.0, connect=10.0)
+            async with httpx.AsyncClient(timeout=timeout) as http_client:
+                async with http_client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=payload) as response:
+                    if response.status_code >= 400:
+                        error_payload = await response.aread()
+                        yield json.dumps(
+                            {
+                                "type": "error",
+                                "error": f"ollama request failed ({response.status_code})",
+                                "details": error_payload.decode("utf-8", errors="ignore"),
+                            }
+                        ) + "\n"
+                        return
+
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        try:
+                            chunk = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        content = chunk.get("message", {}).get("content", "")
+                        if content:
+                            yield json.dumps({"type": "token", "content": content}) + "\n"
+                        if chunk.get("done"):
+                            yield json.dumps({"type": "done"}) + "\n"
+        except httpx.HTTPError as exc:
+            yield json.dumps({"type": "error", "error": f"ollama unavailable: {exc}"}) + "\n"
+
+    return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
+
+
 @app.post("/plagiarism/similarity")
 def plagiarism_similarity(body: SimilarityRequest) -> dict[str, Any]:
     source_sentences: list[str] = []
@@ -325,7 +381,8 @@ def plagiarism_remediate(body: RemediationRequest) -> dict[str, Any]:
     event = {
         "event_id": str(uuid.uuid4()),
         "event_type": "plagiarism.remediated",
-        "provider": "ollama-llama3-compatible",
+        "provider": "ollama",
+        "model": OLLAMA_MODEL,
         "rewritten": rewritten,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

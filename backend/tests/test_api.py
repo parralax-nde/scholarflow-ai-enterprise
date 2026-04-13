@@ -1,6 +1,9 @@
+import json
+
 from fastapi.testclient import TestClient
 from jose import jwt
 
+import app.main as main_module
 from app.main import ACCESS_TTL_SECONDS, CrdtOperation, JWT_ALGORITHM, JWT_SECRET, _merge_crdt_operation, app
 
 client = TestClient(app)
@@ -110,8 +113,58 @@ def test_plagiarism_remediation_publishes_event():
     assert response.status_code == 200
     body = response.json()
     assert body["event_type"] == "plagiarism.remediated"
+    assert body["provider"] == "ollama"
+    assert body["model"] == "gemma4:2b"
     events = client.get("/plagiarism/events").json()["events"]
     assert any(event["event_id"] == body["event_id"] for event in events)
+
+
+def test_ai_chat_stream_returns_ndjson_tokens(monkeypatch):
+    class MockStreamResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def aiter_lines(self):
+            yield '{"message":{"content":"Hello"},"done":false}'
+            yield '{"message":{"content":" world"},"done":false}'
+            yield '{"done":true}'
+
+        async def aread(self):
+            return b""
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        def stream(self, method, url, json):
+            assert method == "POST"
+            assert url.endswith("/api/chat")
+            assert json["model"] == "gemma4:2b"
+            return MockStreamResponse()
+
+    monkeypatch.setattr(main_module.httpx, "AsyncClient", MockAsyncClient)
+
+    response = client.post(
+        "/ai/chat/stream",
+        json={"messages": [{"role": "user", "content": "Write intro paragraph"}]},
+    )
+    assert response.status_code == 200
+    lines = [json.loads(line) for line in response.text.strip().splitlines()]
+    assert lines[0] == {"type": "meta", "model": "gemma4:2b"}
+    assert lines[1] == {"type": "token", "content": "Hello"}
+    assert lines[2] == {"type": "token", "content": " world"}
+    assert lines[3] == {"type": "done"}
 
 
 def test_crdt_merge_updates_state_clock_text_and_cursor():

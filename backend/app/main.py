@@ -29,7 +29,9 @@ app_instance_id = os.getenv("SERVICE_INSTANCE_ID", f"core-{uuid.uuid4()}")
 app_service_name = os.getenv("SERVICE_NAME", "core")
 app_metadata_tags = [tag for tag in os.getenv("SERVICE_METADATA_TAGS", "core,fastapi,scholarflow").split(",") if tag]
 plagiarism_events: list[dict[str, Any]] = []
-doc_crdt_state: dict[str, dict[str, Any]] = defaultdict(lambda: {"clock": 0, "text": "", "cursor": {}})
+doc_crdt_state: dict[str, dict[str, Any]] = defaultdict(
+    lambda: {"clock": 0, "text": "", "cursor": {}, "operations": [], "applied_operation_ids": set()}
+)
 
 
 def register_self() -> None:
@@ -133,10 +135,25 @@ def _trace_id_from_request(headers: dict[str, str]) -> str:
 
 def _merge_crdt_operation(doc_id: str, operation: CrdtOperation) -> dict[str, Any]:
     state = doc_crdt_state[doc_id]
-    state["clock"] = max(state["clock"], operation.timestamp) + 1
-    if operation.text_patch:
-        state["text"] = f'{state["text"]}{operation.text_patch}'
-    state["cursor"][operation.actor_id] = operation.cursor_position
+    if operation.op_id in state["applied_operation_ids"]:
+        return {"doc_id": doc_id, "clock": state["clock"], "text": state["text"], "cursor": state["cursor"]}
+
+    state["operations"].append(operation.model_dump())
+    state["applied_operation_ids"].add(operation.op_id)
+    ordered_ops = sorted(state["operations"], key=lambda op: (op["timestamp"], op["actor_id"], op["op_id"]))
+
+    merged_text = ""
+    cursor_map: dict[str, int] = {}
+    max_ts = state["clock"]
+    for op in ordered_ops:
+        if op["text_patch"]:
+            merged_text = f'{merged_text}{op["text_patch"]}'
+        cursor_map[op["actor_id"]] = op["cursor_position"]
+        max_ts = max(max_ts, op["timestamp"])
+
+    state["clock"] = max_ts + 1
+    state["text"] = merged_text
+    state["cursor"] = cursor_map
     return {"doc_id": doc_id, "clock": state["clock"], "text": state["text"], "cursor": state["cursor"]}
 
 

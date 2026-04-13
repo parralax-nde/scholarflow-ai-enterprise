@@ -5,7 +5,7 @@ This repository now includes a **Docker Compose-first** implementation with all 
 ## Quick start (Docker Compose)
 
 ```bash
-cd /home/runner/work/scholarflow-ai-enterprise/scholarflow-ai-enterprise
+cd scholarflow-ai-enterprise
 docker compose up --build
 ```
 
@@ -67,7 +67,7 @@ Primary endpoints:
 ### Backend
 
 ```bash
-cd /home/runner/work/scholarflow-ai-enterprise/scholarflow-ai-enterprise/backend
+cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -77,7 +77,7 @@ uvicorn app.main:app --reload
 ### Frontend
 
 ```bash
-cd /home/runner/work/scholarflow-ai-enterprise/scholarflow-ai-enterprise/frontend
+cd frontend
 npm install
 npm run dev
 ```
@@ -85,6 +85,6 @@ npm run dev
 ## Tests
 
 ```bash
-cd /home/runner/work/scholarflow-ai-enterprise/scholarflow-ai-enterprise/backend
+cd backend
 pytest -q
 ```

@@ -25,7 +25,7 @@ JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 JWT_ALGORITHM = "HS256"
 ACCESS_TTL_SECONDS = 3600
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:2b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
 
 users_by_google_sub: dict[str, dict[str, Any]] = {}
 users_by_email: dict[str, dict[str, Any]] = {}

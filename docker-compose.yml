@@ -8,7 +8,7 @@ services:
       SERVICE_NAME: core
       SERVICE_METADATA_TAGS: core,auth,plagiarism,citation,collaboration,billing,admin
       OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_MODEL: gemma4:2b
+      OLLAMA_MODEL: gemma4:e2b
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/core/health')"]
       interval: 20s
@@ -21,6 +21,8 @@ services:
         condition: service_started
       rabbitmq:
         condition: service_healthy
+      ollama:
+        condition: service_started
 
   frontend:
     build:
@@ -98,11 +100,16 @@ services:
       - "8200:8200"
 
   ollama:
-    image: ollama/ollama:0.11.11
+    image: ollama/ollama:latest
     container_name: scholarflow-ollama
+    environment:
+      OLLAMA_HOST: http://0.0.0.0:11434
+      OLLAMA_MODEL: gemma4:e2b
+    entrypoint: ["/bin/sh", "/opt/ollama-start.sh"]
     ports:
       - "11434:11434"
     volumes:
+      - ./deploy/ollama/start.sh:/opt/ollama-start.sh:ro
       - ollama_data:/root/.ollama
 
   kong:

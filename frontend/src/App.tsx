@@ -7,7 +7,7 @@ type Message = {
 }
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? '/api'
-const defaultModel = import.meta.env.VITE_OLLAMA_MODEL ?? 'gemma4:2b'
+const defaultModel = import.meta.env.VITE_OLLAMA_MODEL ?? 'gemma4:e2b'
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([
@@ -77,6 +77,7 @@ export default function App() {
       const decoder = new TextDecoder()
       let buffer = ''
       let receivedToken = false
+      let streamHadError = false
 
       while (true) {
         const { value, done } = await reader.read()
@@ -100,13 +101,20 @@ export default function App() {
               receivedToken = true
             }
             if (chunk.type === 'meta' && chunk.model) setStatus(`Connected to Ollama · model ${chunk.model}`)
-            if (chunk.type === 'error') setStatus(chunk.error ? `Error: ${chunk.error}` : 'Stream error')
+            if (chunk.type === 'error') {
+              streamHadError = true
+              const errorMessage = chunk.error ? `Error: ${chunk.error}` : 'Stream error'
+              appendAssistantChunk(assistantId, `\n${errorMessage}`)
+              setStatus(errorMessage)
+            }
           }
           newlineIndex = buffer.indexOf('\n')
         }
       }
 
-      if (!receivedToken) {
+      if (streamHadError) {
+        // Keep the specific error status from the stream payload.
+      } else if (!receivedToken) {
         setStatus('No response received from model')
       } else {
         setStatus('Generation complete')

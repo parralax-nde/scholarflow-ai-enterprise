@@ -228,7 +228,9 @@ export default function App() {
               <div className="chat-title-block">
                 <p className="chat-label">CONVERSATION</p>
                 <h1>{activeConversation.title}</h1>
-                <p className="chat-meta">MARCH 11, 2023 · 7 MESSAGES</p>
+                <p className="chat-meta">
+                  {activeConversation.dateLabel.toUpperCase()} · {activeConversation.messageCount} MESSAGES
+                </p>
               </div>
               <button className="archive-button">ARCHIVE</button>
             </div>

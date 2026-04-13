@@ -155,12 +155,12 @@ body {
 }
 
 .conversation-title {
-  font-size: 32px;
+  font-size: 22px;
   line-height: 1.1;
 }
 
 .conversation-meta {
-  font-size: 22px;
+  font-size: 14px;
   color: #545454;
   margin-top: 3px;
   text-transform: uppercase;
@@ -189,20 +189,20 @@ body {
 
 .chat-titlebar h1 {
   margin: 0;
-  font-size: 46px;
+  font-size: 34px;
 }
 
 .chat-meta {
   margin: 6px 0 0;
   color: #444;
-  font-size: 24px;
+  font-size: 14px;
   letter-spacing: 0.04em;
 }
 
 .archive-button {
   border: none;
   background: transparent;
-  font-size: 24px;
+  font-size: 14px;
   font-weight: 700;
 }
 
@@ -220,7 +220,7 @@ body {
   display: inline-block;
   margin-bottom: 6px;
   color: #8b6b0b;
-  font-size: 22px;
+  font-size: 14px;
   letter-spacing: 0.03em;
 }
 
@@ -231,7 +231,7 @@ body {
 .bubble {
   border-left: 2px solid #d4ad33;
   padding: 6px 0 6px 14px;
-  font-size: 24px;
+  font-size: 18px;
   line-height: 1.45;
 }
 
@@ -253,14 +253,14 @@ body {
   background: #fafafa;
   height: 58px;
   padding: 0 16px;
-  font-size: 32px;
+  font-size: 16px;
 }
 
 .composer button {
   border: 1px solid #d3b24f;
   background: #f2f2f2;
   color: #b07f00;
-  font-size: 28px;
+  font-size: 16px;
   font-weight: 600;
   padding: 0 20px;
 }
@@ -312,17 +312,17 @@ body {
 
 @media (max-width: 1600px) {
   .conversation-title {
-    font-size: 24px;
+    font-size: 20px;
   }
 
   .conversation-meta,
   .chat-meta,
   .bubble,
   .composer input {
-    font-size: 20px;
+    font-size: 14px;
   }
 
   .chat-titlebar h1 {
-    font-size: 32px;
+    font-size: 28px;
   }
 }

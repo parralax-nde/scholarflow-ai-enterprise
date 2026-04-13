@@ -14,6 +14,7 @@ from collections import Counter, defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import gettempdir
 from typing import Any
 
 import httpx
@@ -28,7 +29,9 @@ JWT_ALGORITHM = "HS256"
 ACCESS_TTL_SECONDS = 3600
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
-CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path(__file__).with_name("chat_history.db"))))
+CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path(gettempdir()) / "scholarflow" / "chat_history.db")))
+DEFAULT_CONVERSATION_TITLE = "New chat"
+MAX_CONVERSATION_TITLE_LENGTH = 60
 
 users_by_google_sub: dict[str, dict[str, Any]] = {}
 users_by_email: dict[str, dict[str, Any]] = {}
@@ -43,6 +46,7 @@ plagiarism_events: list[dict[str, Any]] = []
 doc_crdt_state: dict[str, dict[str, Any]] = defaultdict(
     lambda: {"clock": 0, "text": "", "cursor": {}, "operations": [], "applied_operation_ids": set()}
 )
+chat_db_initialized = False
 
 
 def _utc_now_iso() -> str:
@@ -50,12 +54,16 @@ def _utc_now_iso() -> str:
 
 
 def _connect_chat_db() -> sqlite3.Connection:
+    _init_chat_db()
     return sqlite3.connect(CHAT_DB_PATH)
 
 
 def _init_chat_db() -> None:
+    global chat_db_initialized
+    if chat_db_initialized:
+        return
     CHAT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with _connect_chat_db() as conn:
+    with sqlite3.connect(CHAT_DB_PATH) as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS conversations (
@@ -80,6 +88,7 @@ def _init_chat_db() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC)")
+    chat_db_initialized = True
 
 
 def _conversation_exists(conversation_id: str) -> bool:
@@ -88,7 +97,7 @@ def _conversation_exists(conversation_id: str) -> bool:
     return bool(row)
 
 
-def _create_conversation(title: str = "New chat") -> dict[str, Any]:
+def _create_conversation(title: str = DEFAULT_CONVERSATION_TITLE) -> dict[str, Any]:
     conversation_id = str(uuid.uuid4())
     now = _utc_now_iso()
     with _connect_chat_db() as conn:
@@ -99,13 +108,16 @@ def _create_conversation(title: str = "New chat") -> dict[str, Any]:
     return {"id": conversation_id, "title": title, "message_count": 0, "updated_at": now}
 
 
-def _derive_conversation_title(messages: list[dict[str, str]]) -> str:
-    for message in reversed(messages):
-        if message.get("role") == "user":
-            content = " ".join(message.get("content", "").strip().split())
-            if content:
-                return content[:60]
-    return "New chat"
+def _truncate_title(value: str) -> str:
+    clean = " ".join(value.strip().split())
+    if len(clean) <= MAX_CONVERSATION_TITLE_LENGTH:
+        return clean
+    if MAX_CONVERSATION_TITLE_LENGTH <= 3:
+        return clean[:MAX_CONVERSATION_TITLE_LENGTH]
+    sliced = clean[: MAX_CONVERSATION_TITLE_LENGTH - 3].rstrip()
+    if " " in sliced:
+        sliced = sliced.rsplit(" ", 1)[0]
+    return f"{sliced}..."
 
 
 def _add_message(conversation_id: str, role: str, content: str) -> dict[str, Any]:
@@ -118,8 +130,11 @@ def _add_message(conversation_id: str, role: str, content: str) -> dict[str, Any
         )
         conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
         row = conn.execute("SELECT title FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
-        if row and row[0].strip().lower() == "new chat" and role == "user":
-            conn.execute("UPDATE conversations SET title = ? WHERE id = ?", (content[:60], conversation_id))
+        if row and row[0].strip() == DEFAULT_CONVERSATION_TITLE and role == "user":
+            conn.execute(
+                "UPDATE conversations SET title = ? WHERE id = ?",
+                (_truncate_title(content), conversation_id),
+            )
     return {"id": message_id, "conversation_id": conversation_id, "role": role, "content": content, "created_at": now}
 
 
@@ -172,13 +187,11 @@ def register_self() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    _init_chat_db()
     register_self()
     yield
 
 
 app = FastAPI(title="ScholarFlow AI Enterprise", lifespan=lifespan)
-_init_chat_db()
 
 
 class RegisterServiceRequest(BaseModel):
@@ -221,7 +234,7 @@ class ChatStreamRequest(BaseModel):
 
 
 class ConversationCreateRequest(BaseModel):
-    title: str | None = Field(default=None, max_length=120)
+    title: str | None = Field(default=None, max_length=MAX_CONVERSATION_TITLE_LENGTH)
 
 
 class SimilarityRequest(BaseModel):
@@ -449,9 +462,9 @@ def ai_list_conversations() -> list[dict[str, Any]]:
 
 @app.post("/ai/conversations")
 def ai_create_conversation(body: ConversationCreateRequest | None = None) -> dict[str, Any]:
-    title = "New chat"
+    title = DEFAULT_CONVERSATION_TITLE
     if body and body.title and body.title.strip():
-        title = body.title.strip()[:120]
+        title = body.title.strip()[:MAX_CONVERSATION_TITLE_LENGTH]
     return _create_conversation(title=title)
 
 
@@ -469,13 +482,14 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
         if not _conversation_exists(conversation_id):
             raise HTTPException(status_code=404, detail="conversation not found")
     else:
-        conversation = _create_conversation(title=_derive_conversation_title([msg.model_dump() for msg in body.messages]))
+        conversation = _create_conversation()
         conversation_id = conversation["id"]
 
     user_messages = [message for message in body.messages if message.role == "user"]
     latest_user_message = user_messages[-1].content.strip() if user_messages else ""
-    if latest_user_message:
-        _add_message(conversation_id, "user", latest_user_message)
+    if not latest_user_message:
+        raise HTTPException(status_code=400, detail="at least one user message is required")
+    _add_message(conversation_id, "user", latest_user_message)
 
     payload = {
         "model": OLLAMA_MODEL,

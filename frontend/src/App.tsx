@@ -26,6 +26,7 @@ type ConversationMessagesResponse = {
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? '/api'
 const defaultModel = import.meta.env.VITE_OLLAMA_MODEL ?? 'gemma4:e2b'
+const NEW_CHAT_TITLE = 'New chat'
 
 export default function App() {
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -229,8 +230,12 @@ export default function App() {
     } finally {
       setIsStreaming(false)
       if (conversationId) {
-        await loadConversations(conversationId).catch(() => undefined)
-        await loadMessages(conversationId).catch(() => undefined)
+        await loadConversations(conversationId).catch((error) => {
+          setStatus(error instanceof Error ? `Error: ${error.message}` : 'Failed to refresh conversations')
+        })
+        await loadMessages(conversationId).catch((error) => {
+          setStatus(error instanceof Error ? `Error: ${error.message}` : 'Failed to refresh messages')
+        })
       }
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
       inputRef.current?.focus()
@@ -266,7 +271,7 @@ export default function App() {
                 className={`conversation-row ${activeConversationId === conversation.id ? 'active' : ''}`}
                 onClick={() => setActiveConversationId(conversation.id)}
               >
-                <div className="conversation-title">{conversation.title || 'New chat'}</div>
+                <div className="conversation-title">{conversation.title || NEW_CHAT_TITLE}</div>
                 <div className="conversation-meta">{conversation.message_count} messages</div>
               </button>
             ))
@@ -276,7 +281,7 @@ export default function App() {
 
       <main className="chat-pane">
         <header className="chat-header">
-          <h1>{activeConversation?.title || 'New chat'}</h1>
+          <h1>{activeConversation?.title || NEW_CHAT_TITLE}</h1>
           <p className="status-line">{status}</p>
         </header>
 

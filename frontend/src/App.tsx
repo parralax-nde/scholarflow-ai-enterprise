@@ -202,7 +202,7 @@ export default function App() {
             </div>
 
             <button className="profile-chip">@pegasus</button>
-            <button className="new-conversation-btn">+ NEW CONVERSATION</button>
+            <button className="new-conversation-button">+ NEW CONVERSATION</button>
 
             <div className="conversation-list">
               {conversations.map((conversation) => (
@@ -266,8 +266,8 @@ export default function App() {
               <span>Draft v3.docx</span>
             </div>
             <div className="docx-paper">
-              {docxReviewLines.map((line) => (
-                <p key={line}>{line}</p>
+              {docxReviewLines.map((line, index) => (
+                <p key={index}>{line}</p>
               ))}
             </div>
           </aside>

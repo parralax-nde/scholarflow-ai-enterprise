@@ -102,7 +102,7 @@ body {
 }
 
 .profile-chip,
-.new-conversation-btn {
+.new-conversation-button {
   border: 1px solid #d3d3d3;
   background: #fff;
   height: 40px;
@@ -116,7 +116,7 @@ body {
   background: #e0e0e0;
 }
 
-.new-conversation-btn {
+.new-conversation-button {
   color: #b9880a;
 }
 
@@ -231,7 +231,7 @@ body {
 .bubble {
   border-left: 2px solid #d4ad33;
   padding: 6px 0 6px 14px;
-  font-size: 31px;
+  font-size: 24px;
   line-height: 1.45;
 }
 

@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
-from jinja2 import Template
+from jinja2 import Environment
 from jose import jwt
 from pydantic import BaseModel, EmailStr, Field
 
@@ -67,11 +67,7 @@ class ExportRequest(BaseModel):
     title: str
     author: str
     body: str
-    template: str = """
-    <h1>{{ title }}</h1>
-    <p><strong>Author:</strong> {{ author }}</p>
-    <div>{{ body }}</div>
-    """
+    custom_css: str = ""
 
 
 def _tokenize(text: str) -> Counter:
@@ -218,7 +214,18 @@ async def collab_ws(doc_id: str, websocket: WebSocket) -> None:
 
 @app.post("/export/pdf")
 def export_pdf(body: ExportRequest) -> Response:
-    html = Template(body.template).render(title=body.title, author=body.author, body=body.body)
+    safe_template = Environment(autoescape=True).from_string(
+        """
+    <style>
+    body { font-family: Inter, Arial, sans-serif; }
+    {{ custom_css }}
+    </style>
+    <h1>{{ title }}</h1>
+    <p><strong>Author:</strong> {{ author }}</p>
+    <div>{{ body }}</div>
+    """
+    )
+    html = safe_template.render(title=body.title, author=body.author, body=body.body, custom_css=body.custom_css)
     # Lightweight text-based output with PDF media type for integration contract testing.
     return Response(content=html.encode("utf-8"), media_type="application/pdf")
 

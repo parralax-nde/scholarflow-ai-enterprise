@@ -354,10 +354,18 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                             yield json.dumps({"type": "token", "content": content}) + "\n"
                         if chunk.get("done"):
                             yield json.dumps({"type": "done"}) + "\n"
-        except httpx.HTTPError:
-            yield json.dumps({"type": "error", "error": "ollama unavailable"}) + "\n"
+        except httpx.HTTPError as e:
+            yield json.dumps({"type": "error", "error": f"ollama unavailable: {str(e)}"}) + "\n"
 
-    return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 
 @app.post("/plagiarism/similarity")

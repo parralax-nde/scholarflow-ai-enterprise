@@ -161,10 +161,13 @@ def test_ai_chat_stream_returns_ndjson_tokens(monkeypatch):
     )
     assert response.status_code == 200
     lines = [json.loads(line) for line in response.text.strip().splitlines()]
-    assert lines[0] == {"type": "meta", "model": "gemma4:e2b"}
-    assert lines[1] == {"type": "token", "content": "Hello"}
-    assert lines[2] == {"type": "token", "content": " world"}
-    assert lines[3] == {"type": "done"}
+    assert lines[0]["type"] == "meta"
+    assert lines[0]["model"] == "gemma4:e2b"
+    assert lines[1]["type"] == "meta"
+    assert lines[1]["phase"] == "streaming"
+    assert lines[2] == {"type": "token", "content": "Hello"}
+    assert lines[3] == {"type": "token", "content": " world"}
+    assert lines[4] == {"type": "done"}
 
 
 def test_ai_conversations_and_messages_are_persisted(monkeypatch):
@@ -232,3 +235,52 @@ def test_crdt_merge_updates_state_clock_text_and_cursor():
     assert result["clock"] >= 2
     assert result["text"] == "Hello"
     assert result["cursor"]["user-1"] == 5
+
+
+def test_export_docx_preview_renders_xml_with_json_fields():
+    response = client.post(
+        "/export/docx/preview",
+        json={
+            "template_xml": "<doc><h1>{{title}}</h1><p>{{author.name}}</p></doc>",
+            "json_data": {"title": "Research Draft", "author": {"name": "Ada"}},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert "Research Draft" in body["resolved_xml"]
+    assert "Ada" in body["resolved_xml"]
+    assert any("Research Draft" in paragraph for paragraph in body["paragraphs"])
+
+
+def test_export_docx_returns_docx_binary():
+    response = client.post(
+        "/export/docx",
+        json={
+            "template_xml": "<doc><h1>{{title}}</h1><p>{{body}}</p></doc>",
+            "json_data": {"title": "T", "body": "B"},
+            "filename": "sample.docx",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    assert response.headers["content-disposition"].endswith('filename="sample.docx"')
+    assert response.content[:2] == b"PK"
+
+
+def test_export_docx_session_and_file_fetch():
+    session = client.post(
+        "/export/docx/session",
+        json={
+            "template_xml": "<doc><h1>{{title}}</h1><p>{{body}}</p></doc>",
+            "json_data": {"title": "Session", "body": "Artifact"},
+            "filename": "session.docx",
+        },
+    )
+    assert session.status_code == 200
+    payload = session.json()
+    assert payload["viewer_path"].startswith("/docx-viewer/render/")
+
+    fetch = client.get(f"/export/docx/files/{payload['docx_id']}")
+    assert fetch.status_code == 200
+    assert fetch.headers["content-type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    assert fetch.content[:2] == b"PK"

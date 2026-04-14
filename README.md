@@ -81,6 +81,7 @@ Optional AI settings for local backend:
 ```bash
 export OLLAMA_BASE_URL=http://localhost:11434
 export OLLAMA_MODEL=gemma4:e2b
+export OLLAMA_KEEP_ALIVE=-1
 ```
 
 ### Frontend

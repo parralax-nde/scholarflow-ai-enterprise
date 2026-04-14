@@ -9,6 +9,7 @@ services:
       SERVICE_METADATA_TAGS: core,auth,plagiarism,citation,collaboration,billing,admin
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_MODEL: gemma4:e2b
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/core/health')"]
       interval: 20s
@@ -30,6 +31,15 @@ services:
     container_name: scholarflow-frontend
     ports:
       - "5173:80"
+    depends_on:
+      - backend
+
+  docx-viewer:
+    build:
+      context: ./docx-viewer
+    container_name: scholarflow-docx-viewer
+    environment:
+      API_BASE_URL: http://backend:8000
     depends_on:
       - backend
 
@@ -105,6 +115,7 @@ services:
     environment:
       OLLAMA_HOST: http://0.0.0.0:11434
       OLLAMA_MODEL: gemma4:e2b
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
     entrypoint: ["/bin/sh", "/opt/ollama-start.sh"]
     ports:
       - "11434:11434"
@@ -141,6 +152,7 @@ services:
       - "80:80"
     depends_on:
       - kong
+      - docx-viewer
 
 volumes:
   mysql_data:

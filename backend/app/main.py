@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import json
 import math
 import os
@@ -10,6 +11,8 @@ import secrets
 import sqlite3
 import time
 import uuid
+import asyncio
+import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -23,12 +26,15 @@ from fastapi.responses import Response, StreamingResponse
 from jinja2 import Environment
 from jose import jwt
 from pydantic import BaseModel, EmailStr, Field
+from docx import Document
 
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 JWT_ALGORITHM = "HS256"
 ACCESS_TTL_SECONDS = 3600
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "-1")
+MAX_CONTEXT_MESSAGES = int(os.getenv("MAX_CONTEXT_MESSAGES", "12"))
 CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path(gettempdir()) / "scholarflow" / "chat_history.db")))
 DEFAULT_CONVERSATION_TITLE = "New chat"
 MAX_CONVERSATION_TITLE_LENGTH = 60
@@ -47,6 +53,8 @@ doc_crdt_state: dict[str, dict[str, Any]] = defaultdict(
     lambda: {"clock": 0, "text": "", "cursor": {}, "operations": [], "applied_operation_ids": set()}
 )
 chat_db_initialized = False
+DOCX_ARTIFACT_TTL_SECONDS = 1800
+docx_artifacts: dict[str, dict[str, Any]] = {}
 
 
 def _utc_now_iso() -> str:
@@ -185,9 +193,27 @@ def register_self() -> None:
     }
 
 
+async def _warm_ollama_model() -> None:
+    payload = {
+        "model": OLLAMA_MODEL,
+        "stream": False,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "prompt": "Warmup",
+        "options": {"num_predict": 1},
+    }
+    timeout = httpx.Timeout(timeout=30.0, connect=5.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as http_client:
+            await http_client.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload)
+    except httpx.HTTPError:
+        # Warmup is best-effort and should never break API startup.
+        return
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     register_self()
+    asyncio.create_task(_warm_ollama_model())
     yield
 
 
@@ -270,6 +296,24 @@ class ExportRequest(BaseModel):
     custom_css: str = ""
 
 
+class DocxTemplateRequest(BaseModel):
+    template_xml: str = Field(min_length=1)
+    json_data: dict[str, Any] = Field(default_factory=dict)
+    filename: str = Field(default="draft.docx", max_length=120)
+
+
+class DocxPreviewResponse(BaseModel):
+    resolved_xml: str
+    preview_html: str
+    paragraphs: list[str]
+
+
+class DocxSessionResponse(BaseModel):
+    docx_id: str
+    filename: str
+    viewer_path: str
+
+
 def _tokenize(text: str) -> Counter:
     tokens = re.findall(r"[a-zA-Z0-9]+", text.lower())
     return Counter(tokens)
@@ -297,6 +341,80 @@ def _trace_id_from_request(headers: dict[str, str]) -> str:
         if len(parts) >= 2 and parts[1]:
             return parts[1]
     return headers.get("x-request-id", str(uuid.uuid4()))
+
+
+def _lookup_path(data: dict[str, Any], dotted_path: str) -> str:
+    current: Any = data
+    for key in dotted_path.split("."):
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+            continue
+        return ""
+    if isinstance(current, (dict, list)):
+        return json.dumps(current)
+    return "" if current is None else str(current)
+
+
+def _resolve_template_placeholders(template_xml: str, json_data: dict[str, Any]) -> str:
+    def replace_match(match: re.Match[str]) -> str:
+        key = match.group(1).strip()
+        return _lookup_path(json_data, key)
+
+    return re.sub(r"\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}", replace_match, template_xml)
+
+
+def _extract_docx_paragraphs(root: ET.Element) -> list[str]:
+    paragraphs: list[str] = []
+    for node in root.iter():
+        if node.tag in {"p", "h1", "h2", "h3", "li"}:
+            content = "".join(node.itertext()).strip()
+            if content:
+                paragraphs.append(content)
+    if paragraphs:
+        return paragraphs
+    flattened = "".join(root.itertext()).strip()
+    return [flattened] if flattened else []
+
+
+def _build_preview_html(root: ET.Element) -> str:
+    lines: list[str] = []
+    for node in root:
+        if node.tag in {"h1", "h2", "h3", "p"}:
+            lines.append(f"<{node.tag}>{''.join(node.itertext()).strip()}</{node.tag}>")
+        elif node.tag == "ul":
+            items = [f"<li>{''.join(item.itertext()).strip()}</li>" for item in node.findall("li")]
+            lines.append(f"<ul>{''.join(items)}</ul>")
+    if not lines:
+        text = "".join(root.itertext()).strip()
+        if text:
+            lines.append(f"<p>{text}</p>")
+    return "".join(lines)
+
+
+def _build_docx_bytes_from_xml(resolved_xml: str) -> bytes:
+    try:
+        root = ET.fromstring(resolved_xml)
+    except ET.ParseError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid template XML: {exc}") from exc
+
+    document = Document()
+    paragraphs = _extract_docx_paragraphs(root)
+    if not paragraphs:
+        raise HTTPException(status_code=400, detail="template produced empty content")
+
+    for paragraph in paragraphs:
+        document.add_paragraph(paragraph)
+
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def _clean_docx_artifacts() -> None:
+    cutoff = time.time() - DOCX_ARTIFACT_TTL_SECONDS
+    stale_ids = [artifact_id for artifact_id, entry in docx_artifacts.items() if entry["created_at"] < cutoff]
+    for artifact_id in stale_ids:
+        docx_artifacts.pop(artifact_id, None)
 
 
 def _hash_password(password: str, salt: str) -> str:
@@ -491,14 +609,16 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
         raise HTTPException(status_code=400, detail="at least one user message is required")
     _add_message(conversation_id, "user", latest_user_message)
 
+    context_messages = body.messages[-MAX_CONTEXT_MESSAGES:] if len(body.messages) > MAX_CONTEXT_MESSAGES else body.messages
+
     payload = {
         "model": OLLAMA_MODEL,
         "stream": True,
-        "messages": [message.model_dump() for message in body.messages],
+        "messages": [message.model_dump() for message in context_messages],
     }
 
     async def stream_generator():
-        yield json.dumps({"type": "meta", "model": OLLAMA_MODEL}) + "\n"
+        yield json.dumps({"type": "meta", "model": OLLAMA_MODEL, "phase": "queued"}) + "\n"
         assistant_chunks: list[str] = []
         try:
             timeout = httpx.Timeout(timeout=90.0, connect=10.0)
@@ -514,6 +634,7 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                         ) + "\n"
                         return
 
+                    yield json.dumps({"type": "meta", "model": OLLAMA_MODEL, "phase": "streaming"}) + "\n"
                     async for line in response.aiter_lines():
                         if not line:
                             continue
@@ -521,12 +642,24 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                             chunk = json.loads(line)
                         except json.JSONDecodeError:
                             continue
+                        thinking = chunk.get("message", {}).get("thinking", "")
+                        if thinking:
+                            yield json.dumps({"type": "thinking", "content": thinking}) + "\n"
                         content = chunk.get("message", {}).get("content", "")
                         if content:
                             assistant_chunks.append(content)
                             yield json.dumps({"type": "token", "content": content}) + "\n"
                         if chunk.get("done"):
-                            yield json.dumps({"type": "done"}) + "\n"
+                            yield json.dumps(
+                                {
+                                    "type": "done",
+                                    "prompt_eval_count": chunk.get("prompt_eval_count"),
+                                    "prompt_eval_duration": chunk.get("prompt_eval_duration"),
+                                    "eval_count": chunk.get("eval_count"),
+                                    "eval_duration": chunk.get("eval_duration"),
+                                    "total_duration": chunk.get("total_duration"),
+                                }
+                            ) + "\n"
             assistant_content = "".join(assistant_chunks).strip()
             if assistant_content:
                 _add_message(conversation_id, "assistant", assistant_content)
@@ -535,7 +668,7 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
 
     return StreamingResponse(
         stream_generator(),
-        media_type="text/event-stream",
+        media_type="application/x-ndjson",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
@@ -634,6 +767,70 @@ def export_pdf(body: ExportRequest) -> Response:
     html = safe_template.render(title=body.title, author=body.author, body=body.body, custom_css=body.custom_css)
     # Lightweight text-based output with PDF media type for integration contract testing.
     return Response(content=html.encode("utf-8"), media_type="application/pdf")
+
+
+@app.post("/export/docx/preview", response_model=DocxPreviewResponse)
+def export_docx_preview(body: DocxTemplateRequest) -> DocxPreviewResponse:
+    resolved_xml = _resolve_template_placeholders(body.template_xml, body.json_data)
+    try:
+        root = ET.fromstring(resolved_xml)
+    except ET.ParseError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid template XML: {exc}") from exc
+
+    paragraphs = _extract_docx_paragraphs(root)
+    preview_html = _build_preview_html(root)
+    return DocxPreviewResponse(resolved_xml=resolved_xml, preview_html=preview_html, paragraphs=paragraphs)
+
+
+@app.post("/export/docx")
+def export_docx(body: DocxTemplateRequest) -> Response:
+    resolved_xml = _resolve_template_placeholders(body.template_xml, body.json_data)
+    docx_bytes = _build_docx_bytes_from_xml(resolved_xml)
+    safe_filename = body.filename.strip() or "draft.docx"
+    if not safe_filename.lower().endswith(".docx"):
+        safe_filename = f"{safe_filename}.docx"
+
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+    )
+
+
+@app.post("/export/docx/session", response_model=DocxSessionResponse)
+def export_docx_session(body: DocxTemplateRequest) -> DocxSessionResponse:
+    resolved_xml = _resolve_template_placeholders(body.template_xml, body.json_data)
+    docx_bytes = _build_docx_bytes_from_xml(resolved_xml)
+    safe_filename = body.filename.strip() or "draft.docx"
+    if not safe_filename.lower().endswith(".docx"):
+        safe_filename = f"{safe_filename}.docx"
+
+    _clean_docx_artifacts()
+    artifact_id = str(uuid.uuid4())
+    docx_artifacts[artifact_id] = {
+        "content": docx_bytes,
+        "filename": safe_filename,
+        "created_at": time.time(),
+    }
+    return DocxSessionResponse(
+        docx_id=artifact_id,
+        filename=safe_filename,
+        viewer_path=f"/docx-viewer/render/{artifact_id}",
+    )
+
+
+@app.get("/export/docx/files/{docx_id}")
+def export_docx_file(docx_id: str) -> Response:
+    _clean_docx_artifacts()
+    artifact = docx_artifacts.get(docx_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="docx artifact not found")
+
+    return Response(
+        content=artifact["content"],
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'inline; filename="{artifact["filename"]}"'},
+    )
 
 
 @app.post("/billing/webhook")

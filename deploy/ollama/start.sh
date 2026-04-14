@@ -3,6 +3,7 @@ set -eu
 
 export OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 MODEL="${OLLAMA_MODEL:-gemma4:e2b}"
+KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:--1}"
 
 ollama serve &
 OLLAMA_PID=$!
@@ -16,5 +17,8 @@ done
 
 echo "Pulling model ${MODEL}"
 ollama pull "${MODEL}"
+
+echo "Warming model ${MODEL}"
+ollama run "${MODEL}" warmup --keepalive "${KEEP_ALIVE}" >/dev/null 2>&1 || true
 
 wait "$OLLAMA_PID"

@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 type Message = {
   id: string
@@ -24,6 +25,15 @@ type ConversationMessagesResponse = {
   }>
 }
 
+type StreamPhase =
+  | 'idle'
+  | 'sending'
+  | 'waiting-first-token'
+  | 'streaming'
+  | 'saving'
+  | 'done'
+  | 'error'
+
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? '/api'
 const defaultModel = import.meta.env.VITE_OLLAMA_MODEL ?? 'gemma4:e2b'
 const NEW_CHAT_TITLE = 'New chat'
@@ -35,8 +45,22 @@ export default function App() {
   const [prompt, setPrompt] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [status, setStatus] = useState(`Connected · ${defaultModel}`)
+  const [streamPhase, setStreamPhase] = useState<StreamPhase>('idle')
+  const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null)
+  const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null)
+  const [firstTokenAt, setFirstTokenAt] = useState<number | null>(null)
+  const [streamTick, setStreamTick] = useState(0)
   const [isLoadingConversations, setIsLoadingConversations] = useState(true)
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
+  const [docxJson, setDocxJson] = useState('{\n  "title": "Research Brief",\n  "author": { "name": "Dr. Jane Doe" },\n  "body": "Summarize key findings here."\n}')
+  const [docxTemplateXml, setDocxTemplateXml] = useState(
+    '<doc>\n  <h1>{{title}}</h1>\n  <p>Author: {{author.name}}</p>\n  <p>{{body}}</p>\n</doc>',
+  )
+  const [docxResolvedXml, setDocxResolvedXml] = useState('')
+  const [docxDownloadUrl, setDocxDownloadUrl] = useState('')
+  const [docxViewerPath, setDocxViewerPath] = useState('')
+  const [docxError, setDocxError] = useState('')
+  const [isGeneratingDocx, setIsGeneratingDocx] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -44,6 +68,17 @@ export default function App() {
     () => conversations.find((conversation) => conversation.id === activeConversationId),
     [conversations, activeConversationId],
   )
+
+  const streamElapsedMs = useMemo(() => {
+    if (!streamStartedAt) return 0
+    return Date.now() - streamStartedAt
+  }, [streamStartedAt, streamTick])
+
+  useEffect(() => {
+    if (!isStreaming) return
+    const interval = setInterval(() => setStreamTick((prev) => prev + 1), 250)
+    return () => clearInterval(interval)
+  }, [isStreaming])
 
   const loadConversations = async (preferredId?: string) => {
     const response = await fetch(`${apiBase}/ai/conversations`)
@@ -110,6 +145,11 @@ export default function App() {
     })
   }, [activeConversationId])
 
+  useEffect(() => {
+    if (!isStreaming) return
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, isStreaming])
+
   const appendAssistantChunk = (assistantId: string, chunk: string) => {
     setMessages((prev) =>
       prev.map((message) =>
@@ -154,7 +194,11 @@ export default function App() {
     setMessages((prev) => [...prev, userMessage, assistantMessage])
     setPrompt('')
     setIsStreaming(true)
-    setStatus('Generating...')
+    setStreamPhase('sending')
+    setStreamingAssistantId(assistantId)
+    setStreamStartedAt(Date.now())
+    setFirstTokenAt(null)
+    setStatus(`Sending request · ${defaultModel}`)
 
     try {
       const response = await fetch(`${apiBase}/ai/chat/stream`, {
@@ -173,6 +217,7 @@ export default function App() {
       if (!reader) {
         appendAssistantChunk(assistantId, '\n**Error**: Streaming unavailable in this browser.')
         setStatus('Streaming unavailable')
+        setStreamPhase('error')
         return
       }
 
@@ -180,6 +225,8 @@ export default function App() {
       let buffer = ''
       let receivedToken = false
       let streamHadError = false
+      setStreamPhase('waiting-first-token')
+      setStatus(`Waiting for first token · ${defaultModel}`)
 
       while (true) {
         const { value, done } = await reader.read()
@@ -191,7 +238,7 @@ export default function App() {
           const line = buffer.slice(0, newlineIndex).trim()
           buffer = buffer.slice(newlineIndex + 1)
           if (line) {
-            let chunk: { type: string; content?: string; error?: string; model?: string }
+            let chunk: { type: string; content?: string; error?: string; model?: string; phase?: string }
             try {
               chunk = JSON.parse(line)
             } catch {
@@ -199,15 +246,26 @@ export default function App() {
               continue
             }
             if (chunk.type === 'token' && chunk.content) {
+              if (!receivedToken) {
+                setFirstTokenAt(Date.now())
+                setStreamPhase('streaming')
+              }
               appendAssistantChunk(assistantId, chunk.content)
               receivedToken = true
             }
-            if (chunk.type === 'meta' && chunk.model) setStatus(`Connected · ${chunk.model}`)
+            if (chunk.type === 'meta' && chunk.model) {
+              if (chunk.phase === 'queued') setStatus(`Queued in model runtime · ${chunk.model}`)
+              if (chunk.phase === 'streaming' && !receivedToken) {
+                setStatus(`Model engaged · waiting token · ${chunk.model}`)
+              }
+              if (!chunk.phase) setStatus(`Connected · ${chunk.model}`)
+            }
             if (chunk.type === 'error') {
               streamHadError = true
               const errorMessage = chunk.error ? `\n**Error**: ${chunk.error}` : '\n**Error**: Stream error'
               appendAssistantChunk(assistantId, errorMessage)
               setStatus(chunk.error ? `Error: ${chunk.error}` : 'Stream error')
+              setStreamPhase('error')
             }
           }
           newlineIndex = buffer.indexOf('\n')
@@ -218,8 +276,10 @@ export default function App() {
         // Keep error status
       } else if (!receivedToken) {
         setStatus('No response received')
+        setStreamPhase('error')
       } else {
         setStatus('Response ready')
+        setStreamPhase('done')
       }
     } catch (error) {
       appendAssistantChunk(
@@ -227,7 +287,9 @@ export default function App() {
         `\n**Error**: ${error instanceof Error ? error.message : 'Network error'}`,
       )
       setStatus(error instanceof Error ? `Error: ${error.message}` : 'Network error')
+      setStreamPhase('error')
     } finally {
+      setStreamPhase((prev) => (prev === 'error' ? 'error' : 'saving'))
       setIsStreaming(false)
       if (conversationId) {
         await loadConversations(conversationId).catch((error) => {
@@ -237,16 +299,91 @@ export default function App() {
           setStatus(error instanceof Error ? `Error: ${error.message}` : 'Failed to refresh messages')
         })
       }
+      setStreamingAssistantId(null)
+      setStreamStartedAt(null)
+      setFirstTokenAt(null)
+      setStreamPhase((prev) => (prev === 'error' ? 'error' : 'idle'))
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
       inputRef.current?.focus()
     }
   }
 
+  const streamHint = useMemo(() => {
+    if (!isStreaming) return null
+    const elapsedSeconds = (streamElapsedMs / 1000).toFixed(1)
+    if (streamPhase === 'sending') return `Sending request... ${elapsedSeconds}s`
+    if (streamPhase === 'waiting-first-token') return `Model thinking... ${elapsedSeconds}s`
+    if (streamPhase === 'streaming') {
+      if (!firstTokenAt || !streamStartedAt) return `Streaming... ${elapsedSeconds}s`
+      const firstTokenLatency = ((firstTokenAt - streamStartedAt) / 1000).toFixed(1)
+      return `Streaming now · first token in ${firstTokenLatency}s`
+    }
+    if (streamPhase === 'saving') return 'Saving response in conversation history...'
+    return null
+  }, [isStreaming, streamElapsedMs, streamPhase, firstTokenAt, streamStartedAt])
+
+  const generateDocx = async () => {
+    setDocxError('')
+    setIsGeneratingDocx(true)
+    try {
+      const parsedJson = JSON.parse(docxJson) as Record<string, unknown>
+      const payload = {
+        template_xml: docxTemplateXml,
+        json_data: parsedJson,
+        filename: 'scholarflow-draft.docx',
+      }
+
+      const previewResponse = await fetch(`${apiBase}/export/docx/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+
+      if (!previewResponse.ok) {
+        throw new Error(`Preview failed (${previewResponse.status})`)
+      }
+
+      const previewData = (await previewResponse.json()) as {
+        resolved_xml: string
+      }
+      setDocxResolvedXml(previewData.resolved_xml)
+
+      const sessionResponse = await fetch(`${apiBase}/export/docx/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+
+      if (!sessionResponse.ok) {
+        throw new Error(`DOCX session failed (${sessionResponse.status})`)
+      }
+
+      const sessionData = (await sessionResponse.json()) as {
+        docx_id: string
+        viewer_path: string
+      }
+      setDocxDownloadUrl(`${apiBase}/export/docx/files/${sessionData.docx_id}`)
+      setDocxViewerPath(sessionData.viewer_path)
+    } catch (error) {
+      setDocxError(error instanceof Error ? error.message : 'Could not generate DOCX')
+    } finally {
+      setIsGeneratingDocx(false)
+    }
+  }
+
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      void generateDocx()
+    }, 900)
+    return () => clearTimeout(handle)
+  }, [docxJson, docxTemplateXml])
+
   return (
     <div className="app-layout">
       <aside className="sidebar">
         <div className="sidebar-header">
-          <h2>ScholarFlow</h2>
+          <h2>ScholarFlow Archives</h2>
+          <p className="sidebar-subtitle">Conversations</p>
           <button
             type="button"
             className="new-conversation-button"
@@ -283,6 +420,12 @@ export default function App() {
         <header className="chat-header">
           <h1>{activeConversation?.title || NEW_CHAT_TITLE}</h1>
           <p className="status-line">{status}</p>
+          {streamHint && (
+            <div className="stream-progress" role="status" aria-live="polite">
+              <span className="progress-dot" />
+              <span>{streamHint}</span>
+            </div>
+          )}
         </header>
 
         <div className="chat-thread">
@@ -295,7 +438,20 @@ export default function App() {
               <div key={message.id} className={`chat-message ${message.role}`}>
                 <span className="speaker-tag">{message.role === 'assistant' ? 'Assistant' : 'You'}</span>
                 <div className="bubble">
-                  <ReactMarkdown>{message.content}</ReactMarkdown>
+                  {message.content ? (
+                    <>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                      {isStreaming && streamingAssistantId === message.id && (
+                        <span className="typing-cursor" aria-label="assistant is typing" />
+                      )}
+                    </>
+                  ) : isStreaming && streamingAssistantId === message.id ? (
+                    <div className="typing-indicator" aria-label="assistant is typing">
+                      <span className="typing-face">(o_-) </span>
+                      <span className="typing-text">scribbling a draft</span>
+                      <span className="typing-cursor" />
+                    </div>
+                  ) : null}
                 </div>
               </div>
             ))
@@ -312,10 +468,62 @@ export default function App() {
             disabled={isStreaming}
           />
           <button type="submit" disabled={isStreaming || !prompt.trim()}>
-            {isStreaming ? 'Sending…' : 'Send'}
+            {isStreaming ? 'Working…' : 'Send'}
           </button>
         </form>
       </main>
+
+      <aside className="review-pane">
+        <div className="review-header">
+          <h2>DOCX Preview</h2>
+          <p>Fill JSON fields and XML template, then generate a real DOCX and preview.</p>
+        </div>
+        <section className="review-card">
+          <h3>JSON Fields</h3>
+          <textarea
+            className="docx-input"
+            value={docxJson}
+            onChange={(event) => setDocxJson(event.target.value)}
+            spellCheck={false}
+          />
+        </section>
+        <section className="review-card">
+          <h3>XML Template</h3>
+          <textarea
+            className="docx-input"
+            value={docxTemplateXml}
+            onChange={(event) => setDocxTemplateXml(event.target.value)}
+            spellCheck={false}
+          />
+        </section>
+        <section className="review-card">
+          <button type="button" className="docx-generate-btn" onClick={() => void generateDocx()} disabled={isGeneratingDocx}>
+            {isGeneratingDocx ? 'Auto-generating...' : 'Regenerate Now'}
+          </button>
+          {docxDownloadUrl && (
+            <a href={docxDownloadUrl} download="scholarflow-draft.docx" className="docx-download-link">
+              Download DOCX
+            </a>
+          )}
+          {docxError && <p className="docx-error">{docxError}</p>}
+        </section>
+        <section className="review-card">
+          <h3>Resolved XML</h3>
+          <pre className="resolved-xml">{docxResolvedXml || 'No preview yet.'}</pre>
+        </section>
+        <section className="review-card">
+          <h3>Online Viewer</h3>
+          {docxViewerPath ? (
+            <iframe
+              className="docx-viewer-frame"
+              src={docxViewerPath}
+              title="DOCX online preview"
+            />
+          ) : (
+            <div className="docx-preview-surface"><p>No preview yet.</p></div>
+          )}
+        </section>
+      </aside>
     </div>
   )
 }

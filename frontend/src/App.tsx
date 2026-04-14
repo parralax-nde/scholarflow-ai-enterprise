@@ -1,4 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { SuperDocEditor } from '@superdoc-dev/react'
+import '@superdoc-dev/react/style.css'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -39,6 +41,12 @@ const defaultModel = import.meta.env.VITE_OLLAMA_MODEL ?? 'gemma4:e2b'
 const NEW_CHAT_TITLE = 'New chat'
 
 export default function App() {
+  const COLLAPSED_SIDEBAR_WIDTH = 60
+  const RESIZER_WIDTH = 10
+  const MIN_SIDEBAR_WIDTH = 220
+  const MIN_CHAT_WIDTH = 420
+  const MIN_REVIEW_WIDTH = 280
+
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConversationId, setActiveConversationId] = useState('')
   const [messages, setMessages] = useState<Message[]>([])
@@ -52,22 +60,44 @@ export default function App() {
   const [streamTick, setStreamTick] = useState(0)
   const [isLoadingConversations, setIsLoadingConversations] = useState(true)
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
-  const [docxJson, setDocxJson] = useState('{\n  "title": "Research Brief",\n  "author": { "name": "Dr. Jane Doe" },\n  "body": "Summarize key findings here."\n}')
-  const [docxTemplateXml, setDocxTemplateXml] = useState(
-    '<doc>\n  <h1>{{title}}</h1>\n  <p>Author: {{author.name}}</p>\n  <p>{{body}}</p>\n</doc>',
-  )
+  const [docxJson, setDocxJson] = useState('')
+  const [docxTemplateXml, setDocxTemplateXml] = useState('')
   const [docxResolvedXml, setDocxResolvedXml] = useState('')
   const [docxDownloadUrl, setDocxDownloadUrl] = useState('')
   const [docxViewerPath, setDocxViewerPath] = useState('')
+  const [docxFilename, setDocxFilename] = useState('scholarflow-draft.docx')
   const [docxError, setDocxError] = useState('')
   const [isGeneratingDocx, setIsGeneratingDocx] = useState(false)
+  const [isDraftingDocx, setIsDraftingDocx] = useState(false)
+  const [leftPaneWidth, setLeftPaneWidth] = useState(280)
+  const [rightPaneWidth, setRightPaneWidth] = useState(360)
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
+  const [activeResizer, setActiveResizer] = useState<'left' | 'right' | null>(null)
+  const [isCompactLayout, setIsCompactLayout] = useState(
+    typeof window !== 'undefined' ? window.innerWidth <= 900 : false,
+  )
   const inputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const layoutRef = useRef<HTMLDivElement>(null)
+  const lastDocxDraftSeedRef = useRef('')
 
   const activeConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeConversationId),
     [conversations, activeConversationId],
   )
+  const showReviewPane =
+    isDraftingDocx ||
+    isGeneratingDocx ||
+    Boolean(docxDownloadUrl) ||
+    Boolean(docxViewerPath) ||
+    Boolean(docxError)
+
+  const superDocDocumentUrl = useMemo(() => {
+    if (!docxDownloadUrl) return ''
+    return docxDownloadUrl.startsWith('http')
+      ? docxDownloadUrl
+      : `${window.location.origin}${docxDownloadUrl}`
+  }, [docxDownloadUrl])
 
   const streamElapsedMs = useMemo(() => {
     if (!streamStartedAt) return 0
@@ -79,6 +109,75 @@ export default function App() {
     const interval = setInterval(() => setStreamTick((prev) => prev + 1), 250)
     return () => clearInterval(interval)
   }, [isStreaming])
+
+  useEffect(() => {
+    if (!activeResizer) return
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const layout = layoutRef.current
+      if (!layout) return
+
+      const rect = layout.getBoundingClientRect()
+      const visibleSidebarWidth = isSidebarCollapsed ? COLLAPSED_SIDEBAR_WIDTH : leftPaneWidth
+      const maxLeft = Math.max(
+        MIN_SIDEBAR_WIDTH,
+        showReviewPane
+          ? rect.width - rightPaneWidth - MIN_CHAT_WIDTH - RESIZER_WIDTH * 2
+          : rect.width - MIN_CHAT_WIDTH - RESIZER_WIDTH,
+      )
+      const maxRight = Math.max(
+        MIN_REVIEW_WIDTH,
+        rect.width - visibleSidebarWidth - MIN_CHAT_WIDTH - RESIZER_WIDTH * 2,
+      )
+
+      if (activeResizer === 'left' && !isSidebarCollapsed) {
+        const proposedLeft = event.clientX - rect.left
+        const clampedLeft = Math.max(MIN_SIDEBAR_WIDTH, Math.min(maxLeft, proposedLeft))
+        setLeftPaneWidth(clampedLeft)
+      }
+
+      if (activeResizer === 'right' && showReviewPane) {
+        const proposedRight = rect.right - event.clientX
+        const clampedRight = Math.max(MIN_REVIEW_WIDTH, Math.min(maxRight, proposedRight))
+        setRightPaneWidth(clampedRight)
+      }
+    }
+
+    const handleMouseUp = () => setActiveResizer(null)
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [
+    activeResizer,
+    isSidebarCollapsed,
+    leftPaneWidth,
+    rightPaneWidth,
+    showReviewPane,
+    COLLAPSED_SIDEBAR_WIDTH,
+    MIN_SIDEBAR_WIDTH,
+    MIN_CHAT_WIDTH,
+    MIN_REVIEW_WIDTH,
+    RESIZER_WIDTH,
+  ])
+
+  useEffect(() => {
+    const onResize = () => setIsCompactLayout(window.innerWidth <= 900)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  useEffect(() => {
+    if (isCompactLayout) setActiveResizer(null)
+  }, [isCompactLayout])
+
+  useEffect(() => {
+    if (!showReviewPane && activeResizer === 'right') setActiveResizer(null)
+  }, [showReviewPane, activeResizer])
 
   const loadConversations = async (preferredId?: string) => {
     const response = await fetch(`${apiBase}/ai/conversations`)
@@ -254,7 +353,7 @@ export default function App() {
               receivedToken = true
             }
             if (chunk.type === 'meta' && chunk.model) {
-              if (chunk.phase === 'queued') setStatus(`Queued in model runtime · ${chunk.model}`)
+              if (chunk.phase === 'requesting') setStatus(`Requesting model runtime · ${chunk.model}`)
               if (chunk.phase === 'streaming' && !receivedToken) {
                 setStatus(`Model engaged · waiting token · ${chunk.model}`)
               }
@@ -323,6 +422,7 @@ export default function App() {
   }, [isStreaming, streamElapsedMs, streamPhase, firstTokenAt, streamStartedAt])
 
   const generateDocx = async () => {
+    if (!docxTemplateXml.trim() || !docxJson.trim()) return
     setDocxError('')
     setIsGeneratingDocx(true)
     try {
@@ -330,7 +430,7 @@ export default function App() {
       const payload = {
         template_xml: docxTemplateXml,
         json_data: parsedJson,
-        filename: 'scholarflow-draft.docx',
+        filename: docxFilename,
       }
 
       const previewResponse = await fetch(`${apiBase}/export/docx/preview`, {
@@ -361,7 +461,9 @@ export default function App() {
       const sessionData = (await sessionResponse.json()) as {
         docx_id: string
         viewer_path: string
+        filename: string
       }
+      setDocxFilename(sessionData.filename)
       setDocxDownloadUrl(`${apiBase}/export/docx/files/${sessionData.docx_id}`)
       setDocxViewerPath(sessionData.viewer_path)
     } catch (error) {
@@ -371,50 +473,139 @@ export default function App() {
     }
   }
 
+  const generateDocxDraftViaTool = async () => {
+    if (messages.length === 0) return
+
+    setDocxError('')
+    setIsDraftingDocx(true)
+    try {
+      const response = await fetch(`${apiBase}/ai/mcp/tools/docx/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: activeConversationId || undefined,
+          current_template_xml: docxTemplateXml || undefined,
+          current_json_data: docxJson.trim() ? JSON.parse(docxJson) : undefined,
+          messages: messages.map((message) => ({ role: message.role, content: message.content })),
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`DOCX draft tool failed (${response.status})`)
+      }
+
+      const draftData = (await response.json()) as {
+        template_xml: string
+        json_data: Record<string, unknown>
+        filename: string
+      }
+
+      setDocxTemplateXml(draftData.template_xml)
+      setDocxJson(JSON.stringify(draftData.json_data, null, 2))
+      setDocxFilename(draftData.filename || 'scholarflow-draft.docx')
+    } catch (error) {
+      setDocxError(error instanceof Error ? error.message : 'Could not draft DOCX content from AI tool')
+    } finally {
+      setIsDraftingDocx(false)
+    }
+  }
+
   useEffect(() => {
     const handle = setTimeout(() => {
       void generateDocx()
     }, 900)
     return () => clearTimeout(handle)
-  }, [docxJson, docxTemplateXml])
+  }, [docxJson, docxTemplateXml, docxFilename])
+
+  useEffect(() => {
+    if (isStreaming || isLoadingMessages || messages.length === 0) return
+    const latestAssistant = [...messages].reverse().find((message) => message.role === 'assistant' && message.content.trim())
+    if (!latestAssistant) return
+
+    const seed = `${activeConversationId}:${latestAssistant.id}`
+    if (lastDocxDraftSeedRef.current === seed) return
+    lastDocxDraftSeedRef.current = seed
+
+    void generateDocxDraftViaTool()
+  }, [messages, isStreaming, isLoadingMessages, activeConversationId])
+
+  const effectiveLeftWidth = isSidebarCollapsed ? COLLAPSED_SIDEBAR_WIDTH : leftPaneWidth
+  const layoutStyle = isCompactLayout
+    ? undefined
+    : showReviewPane
+      ? {
+          gridTemplateColumns: `${effectiveLeftWidth}px ${RESIZER_WIDTH}px minmax(${MIN_CHAT_WIDTH}px, 1fr) ${RESIZER_WIDTH}px ${rightPaneWidth}px`,
+        }
+      : {
+          gridTemplateColumns: `${effectiveLeftWidth}px ${RESIZER_WIDTH}px minmax(${MIN_CHAT_WIDTH}px, 1fr)`,
+        }
 
   return (
-    <div className="app-layout">
-      <aside className="sidebar">
+    <div ref={layoutRef} className={`app-layout ${activeResizer ? 'is-resizing' : ''}`} style={layoutStyle}>
+      <aside className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="sidebar-header">
-          <h2>ScholarFlow Archives</h2>
-          <p className="sidebar-subtitle">Conversations</p>
-          <button
-            type="button"
-            className="new-conversation-button"
-            onClick={() => {
-              void createConversation().catch((error) => {
-                setStatus(error instanceof Error ? `Error: ${error.message}` : 'Could not create conversation')
-              })
-            }}
-          >
-            New chat
-          </button>
-        </div>
-        <div className="conversation-list">
-          {isLoadingConversations ? (
-            <p className="empty-state">Loading chats...</p>
-          ) : conversations.length === 0 ? (
-            <p className="empty-state">No chats yet.</p>
-          ) : (
-            conversations.map((conversation) => (
+          <div className="sidebar-title-row">
+            {!isSidebarCollapsed && <h2>ScholarFlow Archives</h2>}
+            <button
+              type="button"
+              className="collapse-sidebar-button"
+              onClick={() => setIsSidebarCollapsed((value) => !value)}
+              aria-label={isSidebarCollapsed ? 'Expand conversations panel' : 'Collapse conversations panel'}
+              title={isSidebarCollapsed ? 'Expand panel' : 'Collapse panel'}
+            >
+              <span className={`collapse-sidebar-icon ${isSidebarCollapsed ? 'collapsed' : ''}`} aria-hidden="true" />
+            </button>
+          </div>
+          {!isSidebarCollapsed && (
+            <>
+              <p className="sidebar-subtitle">Conversations</p>
               <button
-                key={conversation.id}
-                className={`conversation-row ${activeConversationId === conversation.id ? 'active' : ''}`}
-                onClick={() => setActiveConversationId(conversation.id)}
+                type="button"
+                className="new-conversation-button"
+                onClick={() => {
+                  void createConversation().catch((error) => {
+                    setStatus(error instanceof Error ? `Error: ${error.message}` : 'Could not create conversation')
+                  })
+                }}
               >
-                <div className="conversation-title">{conversation.title || NEW_CHAT_TITLE}</div>
-                <div className="conversation-meta">{conversation.message_count} messages</div>
+                New chat
               </button>
-            ))
+            </>
           )}
         </div>
+        {!isSidebarCollapsed && (
+          <div className="conversation-list">
+            {isLoadingConversations ? (
+              <p className="empty-state">Loading chats...</p>
+            ) : conversations.length === 0 ? (
+              <p className="empty-state">No chats yet.</p>
+            ) : (
+              conversations.map((conversation) => (
+                <button
+                  key={conversation.id}
+                  className={`conversation-row ${activeConversationId === conversation.id ? 'active' : ''}`}
+                  onClick={() => setActiveConversationId(conversation.id)}
+                >
+                  <div className="conversation-title">{conversation.title || NEW_CHAT_TITLE}</div>
+                  <div className="conversation-meta">{conversation.message_count} messages</div>
+                </button>
+              ))
+            )}
+          </div>
+        )}
       </aside>
+
+      {!isCompactLayout && (
+        <div
+          className={`pane-resizer ${isSidebarCollapsed ? 'disabled' : ''}`}
+          role="separator"
+          aria-label="Resize conversations panel"
+          aria-orientation="vertical"
+          onMouseDown={() => {
+            if (!isSidebarCollapsed) setActiveResizer('left')
+          }}
+        />
+      )}
 
       <main className="chat-pane">
         <header className="chat-header">
@@ -473,57 +664,39 @@ export default function App() {
         </form>
       </main>
 
-      <aside className="review-pane">
-        <div className="review-header">
-          <h2>DOCX Preview</h2>
-          <p>Fill JSON fields and XML template, then generate a real DOCX and preview.</p>
-        </div>
-        <section className="review-card">
-          <h3>JSON Fields</h3>
-          <textarea
-            className="docx-input"
-            value={docxJson}
-            onChange={(event) => setDocxJson(event.target.value)}
-            spellCheck={false}
-          />
-        </section>
-        <section className="review-card">
-          <h3>XML Template</h3>
-          <textarea
-            className="docx-input"
-            value={docxTemplateXml}
-            onChange={(event) => setDocxTemplateXml(event.target.value)}
-            spellCheck={false}
-          />
-        </section>
-        <section className="review-card">
-          <button type="button" className="docx-generate-btn" onClick={() => void generateDocx()} disabled={isGeneratingDocx}>
-            {isGeneratingDocx ? 'Auto-generating...' : 'Regenerate Now'}
-          </button>
-          {docxDownloadUrl && (
-            <a href={docxDownloadUrl} download="scholarflow-draft.docx" className="docx-download-link">
-              Download DOCX
-            </a>
-          )}
-          {docxError && <p className="docx-error">{docxError}</p>}
-        </section>
-        <section className="review-card">
-          <h3>Resolved XML</h3>
-          <pre className="resolved-xml">{docxResolvedXml || 'No preview yet.'}</pre>
-        </section>
-        <section className="review-card">
-          <h3>Online Viewer</h3>
-          {docxViewerPath ? (
+      {!isCompactLayout && showReviewPane && (
+        <div
+          className="pane-resizer"
+          role="separator"
+          aria-label="Resize DOCX review panel"
+          aria-orientation="vertical"
+          onMouseDown={() => setActiveResizer('right')}
+        />
+      )}
+
+      {showReviewPane && (
+        <aside className="review-pane superdoc-only-pane">
+          {superDocDocumentUrl ? (
+            <SuperDocEditor
+              key={superDocDocumentUrl}
+              className="superdoc-frame"
+              style={{ height: '100%' }}
+              document={superDocDocumentUrl}
+              documentMode="editing"
+              role="editor"
+              contained
+            />
+          ) : docxViewerPath ? (
             <iframe
               className="docx-viewer-frame"
               src={docxViewerPath}
               title="DOCX online preview"
             />
           ) : (
-            <div className="docx-preview-surface"><p>No preview yet.</p></div>
+            <div className="superdoc-loading" />
           )}
-        </section>
-      </aside>
+        </aside>
+      )}
     </div>
   )
 }

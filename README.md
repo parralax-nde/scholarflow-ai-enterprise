@@ -92,6 +92,17 @@ npm install
 npm run dev
 ```
 
+Optional SuperDoc integration (embed in DOCX pane):
+
+```bash
+cd frontend
+npm install @superdoc-dev/react
+```
+
+Notes:
+- SuperDoc is mounted directly in the right column using the React wrapper.
+- The DOCX third pane is fully automatic: hidden before generation, shown while generating/editing, and no manual show/hide button is required.
+
 ## Tests
 
 ```bash

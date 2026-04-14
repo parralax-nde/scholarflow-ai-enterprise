@@ -34,8 +34,10 @@ ACCESS_TTL_SECONDS = 3600
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "-1")
+SUPERDOC_MCP_BRIDGE_URL = os.getenv("SUPERDOC_MCP_BRIDGE_URL", "http://localhost:8090").rstrip("/")
 MAX_CONTEXT_MESSAGES = int(os.getenv("MAX_CONTEXT_MESSAGES", "12"))
 CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path(gettempdir()) / "scholarflow" / "chat_history.db")))
+DOCX_ARTIFACT_DIR = Path(os.getenv("DOCX_ARTIFACT_DIR", str(Path(gettempdir()) / "scholarflow" / "docx_artifacts")))
 DEFAULT_CONVERSATION_TITLE = "New chat"
 MAX_CONVERSATION_TITLE_LENGTH = 60
 
@@ -193,11 +195,21 @@ def register_self() -> None:
     }
 
 
+def _normalized_keep_alive() -> str:
+    raw = OLLAMA_KEEP_ALIVE.strip()
+    if raw == "-1":
+        # Ollama expects duration strings on some endpoints; this value means effectively no eviction.
+        return "2562047h47m16.854775807s"
+    if re.fullmatch(r"-?\d+", raw):
+        return f"{raw}s"
+    return raw
+
+
 async def _warm_ollama_model() -> None:
     payload = {
         "model": OLLAMA_MODEL,
         "stream": False,
-        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "keep_alive": _normalized_keep_alive(),
         "prompt": "Warmup",
         "options": {"num_predict": 1},
     }
@@ -314,6 +326,36 @@ class DocxSessionResponse(BaseModel):
     viewer_path: str
 
 
+class DocxToolGenerateRequest(BaseModel):
+    conversation_id: str | None = None
+    prompt: str | None = None
+    messages: list[ChatMessage] = Field(default_factory=list)
+    current_template_xml: str | None = None
+    current_json_data: dict[str, Any] | None = None
+
+
+class DocxToolGenerateResponse(BaseModel):
+    template_xml: str
+    json_data: dict[str, Any]
+    filename: str
+    model: str
+    source: str
+
+
+class SuperdocOpenRequest(BaseModel):
+    docx_id: str = Field(min_length=1)
+
+
+class SuperdocApplyRequest(BaseModel):
+    docx_id: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    suggest: bool = False
+
+
+class SuperdocSessionRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+
+
 def _tokenize(text: str) -> Counter:
     tokens = re.findall(r"[a-zA-Z0-9]+", text.lower())
     return Counter(tokens)
@@ -414,7 +456,211 @@ def _clean_docx_artifacts() -> None:
     cutoff = time.time() - DOCX_ARTIFACT_TTL_SECONDS
     stale_ids = [artifact_id for artifact_id, entry in docx_artifacts.items() if entry["created_at"] < cutoff]
     for artifact_id in stale_ids:
-        docx_artifacts.pop(artifact_id, None)
+        artifact = docx_artifacts.pop(artifact_id, None)
+        if artifact:
+            file_path = artifact.get("file_path")
+            if isinstance(file_path, str) and file_path:
+                Path(file_path).unlink(missing_ok=True)
+
+
+def _ensure_docx_artifact_file(docx_id: str) -> str:
+    _clean_docx_artifacts()
+    artifact = docx_artifacts.get(docx_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="docx artifact not found")
+
+    DOCX_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    file_path = artifact.get("file_path")
+    if isinstance(file_path, str) and file_path:
+        path = Path(file_path)
+    else:
+        filename = artifact.get("filename") or f"{docx_id}.docx"
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(filename)) or f"{docx_id}.docx"
+        path = DOCX_ARTIFACT_DIR / f"{docx_id}-{safe_name}"
+        artifact["file_path"] = str(path)
+
+    if not path.exists():
+        content = artifact.get("content")
+        if not isinstance(content, (bytes, bytearray)):
+            raise HTTPException(status_code=500, detail="docx artifact content unavailable")
+        path.write_bytes(bytes(content))
+    return str(path)
+
+
+def _reload_docx_artifact_content(docx_id: str) -> None:
+    artifact = docx_artifacts.get(docx_id)
+    if not artifact:
+        return
+    file_path = artifact.get("file_path")
+    if isinstance(file_path, str) and file_path and Path(file_path).exists():
+        artifact["content"] = Path(file_path).read_bytes()
+
+
+def _mcp_bridge_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    timeout = httpx.Timeout(timeout=30.0, connect=5.0)
+    try:
+        with httpx.Client(timeout=timeout) as http_client:
+            response = http_client.post(f"{SUPERDOC_MCP_BRIDGE_URL}{path}", json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"mcp bridge unavailable: {exc}") from exc
+
+    if response.status_code >= 400:
+        detail = response.text
+        try:
+            payload_error = response.json()
+            detail = str(payload_error.get("detail") or payload_error)
+        except Exception:
+            detail = response.text
+        raise HTTPException(status_code=502, detail=f"mcp bridge error: {detail}")
+
+    try:
+        return response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"invalid mcp bridge response: {exc}") from exc
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        for idx in range(start, len(text)):
+            char = text[idx]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start : idx + 1]
+                    try:
+                        parsed = json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(parsed, dict):
+                        return parsed
+                    break
+        start = text.find("{", start + 1)
+    return None
+
+
+def _default_docx_draft(seed_text: str) -> tuple[str, dict[str, Any], str]:
+    clean_seed = " ".join(seed_text.strip().split())
+    title = "Untitled Draft"
+    if clean_seed:
+        title = _truncate_title(clean_seed)
+    json_data = {
+        "title": title,
+        "author": {"name": "ScholarFlow AI"},
+        "abstract": clean_seed or "Initial auto-generated draft from the latest conversation.",
+        "body": clean_seed or "Add findings, evidence, and next steps from the conversation.",
+    }
+    template_xml = (
+        "<doc>\n"
+        "  <h1>{{title}}</h1>\n"
+        "  <p><strong>Author:</strong> {{author.name}}</p>\n"
+        "  <h2>Abstract</h2>\n"
+        "  <p>{{abstract}}</p>\n"
+        "  <h2>Draft</h2>\n"
+        "  <p>{{body}}</p>\n"
+        "</doc>"
+    )
+    filename = f"{re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-') or 'scholarflow-draft'}.docx"
+    return template_xml, json_data, filename
+
+
+def _normalize_docx_plan(payload: dict[str, Any], seed_text: str) -> tuple[str, dict[str, Any], str]:
+    template_xml, json_data, filename = _default_docx_draft(seed_text)
+
+    title = str(payload.get("title") or json_data["title"]).strip() or json_data["title"]
+    author_name = "ScholarFlow AI"
+    author = payload.get("author")
+    if isinstance(author, dict):
+        author_name = str(author.get("name") or author_name).strip() or author_name
+    elif isinstance(author, str):
+        author_name = author.strip() or author_name
+
+    abstract = str(payload.get("abstract") or json_data["abstract"]).strip() or json_data["abstract"]
+    body = str(payload.get("body") or "").strip()
+
+    sections = payload.get("sections")
+    if isinstance(sections, list):
+        rendered_sections: list[str] = []
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            heading = str(section.get("heading") or "").strip()
+            content = str(section.get("content") or "").strip()
+            if heading and content:
+                rendered_sections.append(f"{heading}: {content}")
+            elif content:
+                rendered_sections.append(content)
+        if rendered_sections:
+            body = "\n".join(rendered_sections)
+
+    if not body:
+        body = json_data["body"]
+
+    json_data = {
+        "title": title,
+        "author": {"name": author_name},
+        "abstract": abstract,
+        "body": body,
+    }
+    suggested_filename = str(payload.get("filename") or "").strip()
+    if suggested_filename:
+        filename = suggested_filename
+    if not filename.lower().endswith(".docx"):
+        filename = f"{filename}.docx"
+    return template_xml, json_data, filename
+
+
+async def _generate_docx_draft_with_ollama(
+    seed_text: str,
+    source_messages: list[dict[str, str]],
+    current_template_xml: str | None = None,
+    current_json_data: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any], str]:
+    system_prompt = (
+        "You are the ScholarFlow DOCX drafting tool. "
+        "Return only JSON with keys: title, author, abstract, sections (array of {heading,content}), filename."
+    )
+    transcript_lines = [f"{item['role']}: {item['content']}" for item in source_messages if item.get("content")]
+    transcript = "\n".join(transcript_lines[-16:])
+
+    user_prompt = (
+        "Create a professional DOCX draft plan from this conversation transcript. "
+        "Keep abstract concise and sections practical. "
+        "When current draft data is provided, treat this as an edit, not a reset.\n\n"
+        f"Seed focus: {seed_text or 'general summary'}\n\n"
+        f"Current template xml:\n{current_template_xml or '(none)'}\n\n"
+        f"Current json data:\n{json.dumps(current_json_data or {}, ensure_ascii=True)}\n\n"
+        f"Transcript:\n{transcript}"
+    )
+
+    payload = {
+        "model": OLLAMA_MODEL,
+        "stream": False,
+        "keep_alive": _normalized_keep_alive(),
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+
+    timeout = httpx.Timeout(timeout=60.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as http_client:
+        response = await http_client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
+        response.raise_for_status()
+        response_payload = response.json()
+
+    message_content = str(response_payload.get("message", {}).get("content", "")).strip()
+    parsed = _extract_json_object(message_content)
+    if not parsed:
+        if current_template_xml and current_json_data:
+            filename_seed = _truncate_title(seed_text or str(current_json_data.get("title") or "document"))
+            safe_filename = f"{re.sub(r'[^a-z0-9]+', '-', filename_seed.lower()).strip('-') or 'document'}.docx"
+            return current_template_xml, current_json_data, safe_filename
+        return _default_docx_draft(seed_text)
+    return _normalize_docx_plan(parsed, seed_text)
 
 
 def _hash_password(password: str, salt: str) -> str:
@@ -614,22 +860,29 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
     payload = {
         "model": OLLAMA_MODEL,
         "stream": True,
+        "keep_alive": _normalized_keep_alive(),
         "messages": [message.model_dump() for message in context_messages],
     }
 
     async def stream_generator():
-        yield json.dumps({"type": "meta", "model": OLLAMA_MODEL, "phase": "queued"}) + "\n"
+        yield json.dumps({"type": "meta", "model": OLLAMA_MODEL, "phase": "requesting"}) + "\n"
         assistant_chunks: list[str] = []
         try:
             timeout = httpx.Timeout(timeout=90.0, connect=10.0)
             async with httpx.AsyncClient(timeout=timeout) as http_client:
                 async with http_client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=payload) as response:
                     if response.status_code >= 400:
-                        await response.aread()
+                        raw_error = (await response.aread()).decode("utf-8", errors="ignore")
+                        detail = raw_error
+                        try:
+                            parsed = json.loads(raw_error)
+                            detail = str(parsed.get("error") or raw_error)
+                        except json.JSONDecodeError:
+                            detail = raw_error
                         yield json.dumps(
                             {
                                 "type": "error",
-                                "error": f"ollama request failed ({response.status_code})",
+                                "error": f"ollama request failed ({response.status_code}): {detail.strip()[:220]}",
                             }
                         ) + "\n"
                         return
@@ -674,6 +927,56 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         }
+    )
+
+
+@app.post("/ai/mcp/tools/docx/generate", response_model=DocxToolGenerateResponse)
+async def ai_mcp_docx_generate(body: DocxToolGenerateRequest) -> DocxToolGenerateResponse:
+    source_messages: list[dict[str, str]] = []
+    if body.messages:
+        source_messages = [
+            {"role": message.role, "content": message.content}
+            for message in body.messages
+            if message.content.strip()
+        ]
+    elif body.conversation_id:
+        if not _conversation_exists(body.conversation_id):
+            raise HTTPException(status_code=404, detail="conversation not found")
+        source_messages = [
+            {"role": message["role"], "content": message["content"]}
+            for message in _list_messages(body.conversation_id)
+            if str(message.get("content", "")).strip()
+        ]
+
+    if not source_messages and not (body.prompt and body.prompt.strip()):
+        raise HTTPException(status_code=400, detail="conversation_id, messages, or prompt is required")
+
+    seed_text = (body.prompt or "").strip()
+    if not seed_text:
+        user_like_messages = [m["content"] for m in source_messages if m["role"] == "user"]
+        seed_text = user_like_messages[-1].strip() if user_like_messages else source_messages[-1]["content"]
+
+    try:
+        template_xml, json_data, filename = await _generate_docx_draft_with_ollama(
+            seed_text,
+            source_messages,
+            body.current_template_xml,
+            body.current_json_data,
+        )
+    except httpx.HTTPError:
+        if body.current_template_xml and body.current_json_data:
+            filename_seed = _truncate_title(seed_text or str(body.current_json_data.get("title") or "document"))
+            fallback_filename = f"{re.sub(r'[^a-z0-9]+', '-', filename_seed.lower()).strip('-') or 'document'}.docx"
+            template_xml, json_data, filename = body.current_template_xml, body.current_json_data, fallback_filename
+        else:
+            template_xml, json_data, filename = _default_docx_draft(seed_text)
+
+    return DocxToolGenerateResponse(
+        template_xml=template_xml,
+        json_data=json_data,
+        filename=filename,
+        model=OLLAMA_MODEL,
+        source="mcp-docx-tool",
     )
 
 
@@ -807,9 +1110,13 @@ def export_docx_session(body: DocxTemplateRequest) -> DocxSessionResponse:
 
     _clean_docx_artifacts()
     artifact_id = str(uuid.uuid4())
+    DOCX_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    file_path = DOCX_ARTIFACT_DIR / f"{artifact_id}-{re.sub(r'[^a-zA-Z0-9._-]+', '-', safe_filename)}"
+    file_path.write_bytes(docx_bytes)
     docx_artifacts[artifact_id] = {
         "content": docx_bytes,
         "filename": safe_filename,
+        "file_path": str(file_path),
         "created_at": time.time(),
     }
     return DocxSessionResponse(
@@ -826,11 +1133,66 @@ def export_docx_file(docx_id: str) -> Response:
     if not artifact:
         raise HTTPException(status_code=404, detail="docx artifact not found")
 
+    file_path = artifact.get("file_path")
+    content = artifact.get("content")
+    if isinstance(file_path, str) and file_path and Path(file_path).exists():
+        content = Path(file_path).read_bytes()
+        artifact["content"] = content
+
     return Response(
-        content=artifact["content"],
+        content=content,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'inline; filename="{artifact["filename"]}"'},
     )
+
+
+@app.post("/ai/mcp/superdoc/open")
+def ai_mcp_superdoc_open(body: SuperdocOpenRequest) -> dict[str, Any]:
+    file_path = _ensure_docx_artifact_file(body.docx_id)
+    opened = _mcp_bridge_post("/superdoc/open", {"path": file_path})
+    return {"docx_id": body.docx_id, "opened": opened}
+
+
+@app.post("/ai/mcp/superdoc/apply")
+def ai_mcp_superdoc_apply(body: SuperdocApplyRequest) -> dict[str, Any]:
+    file_path = _ensure_docx_artifact_file(body.docx_id)
+    opened = _mcp_bridge_post("/superdoc/open", {"path": file_path})
+    parsed_open = opened.get("parsed")
+    if not isinstance(parsed_open, dict) or "session_id" not in parsed_open:
+        raise HTTPException(status_code=502, detail="mcp open did not return session_id")
+
+    session_id = str(parsed_open["session_id"])
+    clipped = body.content.strip()[:3500]
+
+    try:
+        _mcp_bridge_post(
+            "/superdoc/create-paragraph",
+            {"session_id": session_id, "text": clipped, "suggest": body.suggest},
+        )
+        _mcp_bridge_post("/superdoc/save", {"session_id": session_id})
+    finally:
+        try:
+            _mcp_bridge_post("/superdoc/close", {"session_id": session_id})
+        except HTTPException:
+            pass
+
+    _reload_docx_artifact_content(body.docx_id)
+    return {
+        "docx_id": body.docx_id,
+        "applied": True,
+        "session_id": session_id,
+        "file_path": file_path,
+    }
+
+
+@app.post("/ai/mcp/superdoc/save")
+def ai_mcp_superdoc_save(body: SuperdocSessionRequest) -> dict[str, Any]:
+    return _mcp_bridge_post("/superdoc/save", {"session_id": body.session_id})
+
+
+@app.post("/ai/mcp/superdoc/close")
+def ai_mcp_superdoc_close(body: SuperdocSessionRequest) -> dict[str, Any]:
+    return _mcp_bridge_post("/superdoc/close", {"session_id": body.session_id})
 
 
 @app.post("/billing/webhook")

@@ -151,6 +151,8 @@ def test_ai_chat_stream_returns_ndjson_tokens(monkeypatch):
             assert method == "POST"
             assert url.endswith("/api/chat")
             assert json["model"] == "gemma4:e2b"
+            assert isinstance(json["keep_alive"], str)
+            assert json["keep_alive"]
             return MockStreamResponse()
 
     monkeypatch.setattr(main_module.httpx, "AsyncClient", MockAsyncClient)
@@ -163,11 +165,62 @@ def test_ai_chat_stream_returns_ndjson_tokens(monkeypatch):
     lines = [json.loads(line) for line in response.text.strip().splitlines()]
     assert lines[0]["type"] == "meta"
     assert lines[0]["model"] == "gemma4:e2b"
+    assert lines[0]["phase"] == "requesting"
     assert lines[1]["type"] == "meta"
     assert lines[1]["phase"] == "streaming"
     assert lines[2] == {"type": "token", "content": "Hello"}
     assert lines[3] == {"type": "token", "content": " world"}
     assert lines[4] == {"type": "done"}
+
+
+def test_ai_mcp_docx_generate_returns_docx_plan(monkeypatch):
+    class MockResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "message": {
+                    "content": '{"title":"Draft Plan","author":{"name":"Copilot"},"abstract":"Summary","sections":[{"heading":"Findings","content":"Details"}],"filename":"draft-plan.docx"}'
+                }
+            }
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json):
+            assert url.endswith("/api/chat")
+            assert isinstance(json["keep_alive"], str)
+            assert json["keep_alive"]
+            assert json["stream"] is False
+            return MockResponse()
+
+    monkeypatch.setattr(main_module.httpx, "AsyncClient", MockAsyncClient)
+
+    response = client.post(
+        "/ai/mcp/tools/docx/generate",
+        json={
+            "current_template_xml": "<doc><h1>{{title}}</h1><p>{{body}}</p></doc>",
+            "current_json_data": {"title": "Existing", "body": "Draft"},
+            "messages": [
+                {"role": "user", "content": "Draft a market analysis report"},
+                {"role": "assistant", "content": "I can help with that."},
+            ]
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "mcp-docx-tool"
+    assert body["template_xml"].startswith("<doc>")
+    assert body["json_data"]["title"] == "Draft Plan"
+    assert body["filename"] == "draft-plan.docx"
 
 
 def test_ai_conversations_and_messages_are_persisted(monkeypatch):

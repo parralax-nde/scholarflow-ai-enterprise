@@ -1,0 +1,13 @@
+{
+  "name": "scholarflow-mcp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@superdoc-dev/mcp": "^0.6.4",
+    "express": "^4.21.2"
+  }
+}

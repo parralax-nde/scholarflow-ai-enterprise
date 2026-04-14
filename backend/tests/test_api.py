@@ -120,42 +120,14 @@ def test_plagiarism_remediation_publishes_event():
 
 
 def test_ai_chat_stream_returns_ndjson_tokens(monkeypatch):
-    class MockStreamResponse:
-        status_code = 200
+    async def mock_generate_chat(context_messages):
+        assert context_messages
+        return [
+            {"agent": "Analyst", "content": "Answer A"},
+            {"agent": "Researcher", "content": "Answer B"},
+        ]
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        async def aiter_lines(self):
-            yield '{"message":{"content":"Hello"},"done":false}'
-            yield '{"message":{"content":" world"},"done":false}'
-            yield '{"done":true}'
-
-        async def aread(self):
-            return b""
-
-    class MockAsyncClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        def stream(self, method, url, json):
-            assert method == "POST"
-            assert url.endswith("/api/chat")
-            assert json["model"] == "gemma4:e2b"
-            assert isinstance(json["keep_alive"], str)
-            assert json["keep_alive"]
-            return MockStreamResponse()
-
-    monkeypatch.setattr(main_module.httpx, "AsyncClient", MockAsyncClient)
+    monkeypatch.setattr(main_module, "_generate_chat_with_crewai", mock_generate_chat)
 
     response = client.post(
         "/ai/chat/stream",
@@ -166,43 +138,33 @@ def test_ai_chat_stream_returns_ndjson_tokens(monkeypatch):
     assert lines[0]["type"] == "meta"
     assert lines[0]["model"] == "gemma4:e2b"
     assert lines[0]["phase"] == "requesting"
+    assert lines[0]["orchestrator"] == "chatdev-like"
     assert lines[1]["type"] == "meta"
     assert lines[1]["phase"] == "streaming"
-    assert lines[2] == {"type": "token", "content": "Hello"}
-    assert lines[3] == {"type": "token", "content": " world"}
-    assert lines[4] == {"type": "done"}
+    assert lines[1]["agents"] == 3
+    agent_lines = [line for line in lines if line.get("type") == "agent_result"]
+    assert len(agent_lines) == 2
+    assert any(line["agent"] == "Analyst" and "Answer A" in line["content"] for line in agent_lines)
+    assert any(line["agent"] == "Researcher" and "Answer B" in line["content"] for line in agent_lines)
+    assert lines[-1] == {"type": "done"}
 
 
 def test_ai_mcp_docx_generate_returns_docx_plan(monkeypatch):
-    class MockResponse:
-        def raise_for_status(self):
-            return None
+    async def mock_generate_docx(seed_text, source_messages, current_template_xml=None, current_json_data=None):
+        assert seed_text
+        assert source_messages
+        return (
+            "<doc><h1>{{title}}</h1><p>{{body}}</p></doc>",
+            {
+                "title": "Draft Plan",
+                "author": {"name": "Copilot"},
+                "abstract": "Summary",
+                "body": "Details",
+            },
+            "draft-plan.docx",
+        )
 
-        def json(self):
-            return {
-                "message": {
-                    "content": '{"title":"Draft Plan","author":{"name":"Copilot"},"abstract":"Summary","sections":[{"heading":"Findings","content":"Details"}],"filename":"draft-plan.docx"}'
-                }
-            }
-
-    class MockAsyncClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        async def post(self, url, json):
-            assert url.endswith("/api/chat")
-            assert isinstance(json["keep_alive"], str)
-            assert json["keep_alive"]
-            assert json["stream"] is False
-            return MockResponse()
-
-    monkeypatch.setattr(main_module.httpx, "AsyncClient", MockAsyncClient)
+    monkeypatch.setattr(main_module, "_generate_docx_draft_with_crewai", mock_generate_docx)
 
     response = client.post(
         "/ai/mcp/tools/docx/generate",
@@ -217,43 +179,18 @@ def test_ai_mcp_docx_generate_returns_docx_plan(monkeypatch):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["source"] == "mcp-docx-tool"
+    assert body["source"] == "crewai-mcp-docx-tool"
     assert body["template_xml"].startswith("<doc>")
     assert body["json_data"]["title"] == "Draft Plan"
     assert body["filename"] == "draft-plan.docx"
 
 
 def test_ai_conversations_and_messages_are_persisted(monkeypatch):
-    class MockStreamResponse:
-        status_code = 200
+    async def mock_generate_chat(context_messages):
+        assert context_messages
+        return [{"agent": "Strategist", "content": "Stored reply"}]
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        async def aiter_lines(self):
-            yield '{"message":{"content":"Stored reply"},"done":false}'
-            yield '{"done":true}'
-
-        async def aread(self):
-            return b""
-
-    class MockAsyncClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        def stream(self, method, url, json):
-            return MockStreamResponse()
-
-    monkeypatch.setattr(main_module.httpx, "AsyncClient", MockAsyncClient)
+    monkeypatch.setattr(main_module, "_generate_chat_with_crewai", mock_generate_chat)
 
     conversation = client.post("/ai/conversations", json={})
     assert conversation.status_code == 200
@@ -278,6 +215,7 @@ def test_ai_conversations_and_messages_are_persisted(monkeypatch):
     assert body["conversation_id"] == conversation_id
     assert any(item["role"] == "user" and "Persist this conversation" in item["content"] for item in body["messages"])
     assert any(item["role"] == "assistant" and "Stored reply" in item["content"] for item in body["messages"])
+    assert any(item["role"] == "assistant" and "[Agent:Strategist]" in item["content"] for item in body["messages"])
 
 
 def test_crdt_merge_updates_state_clock_text_and_cursor():
@@ -288,6 +226,12 @@ def test_crdt_merge_updates_state_clock_text_and_cursor():
     assert result["clock"] >= 2
     assert result["text"] == "Hello"
     assert result["cursor"]["user-1"] == 5
+
+
+def test_extract_superdoc_session_id_handles_multiple_payload_shapes():
+    assert main_module._extract_superdoc_session_id({"session_id": "abc-1"}) == "abc-1"
+    assert main_module._extract_superdoc_session_id({"result": {"sessionId": "abc-2"}}) == "abc-2"
+    assert main_module._extract_superdoc_session_id('{"session_id":"abc-3"}') == "abc-3"
 
 
 def test_export_docx_preview_renders_xml_with_json_fields():

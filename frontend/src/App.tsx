@@ -8,6 +8,8 @@ type Message = {
   id: string
   role: 'user' | 'assistant'
   content: string
+  speaker?: string
+  source?: 'user' | 'assistant' | 'agent'
 }
 
 type Conversation = {
@@ -65,6 +67,7 @@ export default function App() {
   const [docxResolvedXml, setDocxResolvedXml] = useState('')
   const [docxDownloadUrl, setDocxDownloadUrl] = useState('')
   const [docxViewerPath, setDocxViewerPath] = useState('')
+  const [docxId, setDocxId] = useState('')
   const [docxFilename, setDocxFilename] = useState('scholarflow-draft.docx')
   const [docxError, setDocxError] = useState('')
   const [isGeneratingDocx, setIsGeneratingDocx] = useState(false)
@@ -80,6 +83,33 @@ export default function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const layoutRef = useRef<HTMLDivElement>(null)
   const lastDocxDraftSeedRef = useRef('')
+  const lastMcpApplySeedRef = useRef('')
+
+  const parseStoredMessage = (message: {
+    id: string
+    role: 'user' | 'assistant'
+    content: string
+    created_at?: string
+  }): Message => {
+    if (message.role !== 'assistant') {
+      return { id: message.id, role: message.role, content: message.content, source: 'user' }
+    }
+
+    const match = /^\[Agent:([^\]]+)\]\n([\s\S]*)$/m.exec(message.content)
+    if (!match) {
+      return { id: message.id, role: message.role, content: message.content, source: 'assistant' }
+    }
+
+    const speaker = match[1].trim()
+    const content = match[2].trim()
+    return {
+      id: message.id,
+      role: 'assistant',
+      content,
+      speaker,
+      source: 'agent',
+    }
+  }
 
   const activeConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeConversationId),
@@ -201,7 +231,7 @@ export default function App() {
       const response = await fetch(`${apiBase}/ai/conversations/${conversationId}/messages`)
       if (!response.ok) throw new Error(`Failed to load messages (${response.status})`)
       const data = (await response.json()) as ConversationMessagesResponse
-      setMessages(data.messages)
+      setMessages(data.messages.map((message) => parseStoredMessage(message)))
     } finally {
       setIsLoadingMessages(false)
     }
@@ -235,6 +265,13 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    setDocxId('')
+    setDocxDownloadUrl('')
+    setDocxViewerPath('')
+    setDocxError('')
+    lastDocxDraftSeedRef.current = ''
+    lastMcpApplySeedRef.current = ''
+
     if (!activeConversationId) {
       setMessages([])
       return
@@ -268,13 +305,6 @@ export default function App() {
       role: 'user',
       content: prompt.trim(),
     }
-    const assistantId = crypto.randomUUID()
-    const assistantMessage: Message = {
-      id: assistantId,
-      role: 'assistant',
-      content: '',
-    }
-
     let conversationId = activeConversationId
     if (!conversationId) {
       try {
@@ -290,11 +320,11 @@ export default function App() {
       { role: 'user' as const, content: userMessage.content },
     ]
 
-    setMessages((prev) => [...prev, userMessage, assistantMessage])
+    setMessages((prev) => [...prev, userMessage])
     setPrompt('')
     setIsStreaming(true)
     setStreamPhase('sending')
-    setStreamingAssistantId(assistantId)
+    setStreamingAssistantId(null)
     setStreamStartedAt(Date.now())
     setFirstTokenAt(null)
     setStatus(`Sending request · ${defaultModel}`)
@@ -307,14 +337,26 @@ export default function App() {
       })
 
       if (!response.ok) {
-        appendAssistantChunk(assistantId, `\n**Error**: Request failed (${response.status})`)
+        const errorMessage: Message = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: `**Error**: Request failed (${response.status})`,
+          source: 'assistant',
+        }
+        setMessages((prev) => [...prev, errorMessage])
         setStatus(`Error (${response.status})`)
         return
       }
 
       const reader = response.body?.getReader()
       if (!reader) {
-        appendAssistantChunk(assistantId, '\n**Error**: Streaming unavailable in this browser.')
+        const errorMessage: Message = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: '**Error**: Streaming unavailable in this browser.',
+          source: 'assistant',
+        }
+        setMessages((prev) => [...prev, errorMessage])
         setStatus('Streaming unavailable')
         setStreamPhase('error')
         return
@@ -337,32 +379,59 @@ export default function App() {
           const line = buffer.slice(0, newlineIndex).trim()
           buffer = buffer.slice(newlineIndex + 1)
           if (line) {
-            let chunk: { type: string; content?: string; error?: string; model?: string; phase?: string }
+            let chunk: {
+              type: string
+              content?: string
+              error?: string
+              model?: string
+              phase?: string
+              orchestrator?: string
+              agents?: number
+              agent?: string
+            }
             try {
               chunk = JSON.parse(line)
             } catch {
               newlineIndex = buffer.indexOf('\n')
               continue
             }
-            if (chunk.type === 'token' && chunk.content) {
+            if (chunk.type === 'agent_result' && chunk.agent && chunk.content) {
               if (!receivedToken) {
                 setFirstTokenAt(Date.now())
                 setStreamPhase('streaming')
               }
-              appendAssistantChunk(assistantId, chunk.content)
+              const agentMessage: Message = {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: chunk.content,
+                speaker: chunk.agent,
+                source: 'agent',
+              }
+              setMessages((prev) => [...prev, agentMessage])
               receivedToken = true
             }
             if (chunk.type === 'meta' && chunk.model) {
+              const orchestrationLabel =
+                chunk.orchestrator && chunk.agents
+                  ? ` · ${chunk.orchestrator.toUpperCase()} ${chunk.agents} agents`
+                  : chunk.orchestrator
+                    ? ` · ${chunk.orchestrator.toUpperCase()}`
+                    : ''
               if (chunk.phase === 'requesting') setStatus(`Requesting model runtime · ${chunk.model}`)
               if (chunk.phase === 'streaming' && !receivedToken) {
-                setStatus(`Model engaged · waiting token · ${chunk.model}`)
+                setStatus(`Model engaged · waiting token · ${chunk.model}${orchestrationLabel}`)
               }
-              if (!chunk.phase) setStatus(`Connected · ${chunk.model}`)
+              if (!chunk.phase) setStatus(`Connected · ${chunk.model}${orchestrationLabel}`)
             }
             if (chunk.type === 'error') {
               streamHadError = true
-              const errorMessage = chunk.error ? `\n**Error**: ${chunk.error}` : '\n**Error**: Stream error'
-              appendAssistantChunk(assistantId, errorMessage)
+              const errorMessage: Message = {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: chunk.error ? `**Error**: ${chunk.error}` : '**Error**: Stream error',
+                source: 'assistant',
+              }
+              setMessages((prev) => [...prev, errorMessage])
               setStatus(chunk.error ? `Error: ${chunk.error}` : 'Stream error')
               setStreamPhase('error')
             }
@@ -381,10 +450,13 @@ export default function App() {
         setStreamPhase('done')
       }
     } catch (error) {
-      appendAssistantChunk(
-        assistantId,
-        `\n**Error**: ${error instanceof Error ? error.message : 'Network error'}`,
-      )
+      const errorMessage: Message = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: `**Error**: ${error instanceof Error ? error.message : 'Network error'}`,
+        source: 'assistant',
+      }
+      setMessages((prev) => [...prev, errorMessage])
       setStatus(error instanceof Error ? `Error: ${error.message}` : 'Network error')
       setStreamPhase('error')
     } finally {
@@ -464,6 +536,7 @@ export default function App() {
         filename: string
       }
       setDocxFilename(sessionData.filename)
+      setDocxId(sessionData.docx_id)
       setDocxDownloadUrl(`${apiBase}/export/docx/files/${sessionData.docx_id}`)
       setDocxViewerPath(sessionData.viewer_path)
     } catch (error) {
@@ -510,6 +583,23 @@ export default function App() {
     }
   }
 
+  const applyLatestAssistantToDocxViaMcp = async (targetDocxId: string, content: string) => {
+    if (!targetDocxId || !content.trim()) return
+    const response = await fetch(`${apiBase}/ai/mcp/superdoc/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        docx_id: targetDocxId,
+        content,
+        suggest: true,
+      }),
+    })
+
+    if (!response.ok) {
+      throw new Error(`SuperDoc MCP apply failed (${response.status})`)
+    }
+  }
+
   useEffect(() => {
     const handle = setTimeout(() => {
       void generateDocx()
@@ -528,6 +618,20 @@ export default function App() {
 
     void generateDocxDraftViaTool()
   }, [messages, isStreaming, isLoadingMessages, activeConversationId])
+
+  useEffect(() => {
+    if (isStreaming || isLoadingMessages || isGeneratingDocx || !docxId || messages.length === 0) return
+    const latestAssistant = [...messages].reverse().find((message) => message.role === 'assistant' && message.content.trim())
+    if (!latestAssistant) return
+
+    const seed = `${docxId}:${latestAssistant.id}`
+    if (lastMcpApplySeedRef.current === seed) return
+    lastMcpApplySeedRef.current = seed
+
+    void applyLatestAssistantToDocxViaMcp(docxId, latestAssistant.content).catch((error) => {
+      setDocxError(error instanceof Error ? error.message : 'Could not apply SuperDoc MCP update')
+    })
+  }, [messages, isStreaming, isLoadingMessages, isGeneratingDocx, docxId])
 
   const effectiveLeftWidth = isSidebarCollapsed ? COLLAPSED_SIDEBAR_WIDTH : leftPaneWidth
   const layoutStyle = isCompactLayout
@@ -627,7 +731,9 @@ export default function App() {
           ) : (
             messages.map((message) => (
               <div key={message.id} className={`chat-message ${message.role}`}>
-                <span className="speaker-tag">{message.role === 'assistant' ? 'Assistant' : 'You'}</span>
+                <span className="speaker-tag">
+                  {message.role === 'assistant' ? message.speaker || 'Assistant' : 'You'}
+                </span>
                 <div className="bubble">
                   {message.content ? (
                     <>

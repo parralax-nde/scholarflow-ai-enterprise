@@ -10,6 +10,10 @@ services:
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_MODEL: gemma4:e2b
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
+      SUPERDOC_MCP_URL: http://superdoc-mcp:8090/mcp
+      DOCX_ARTIFACT_DIR: /shared/docx
+    volumes:
+      - docx_shared:/shared/docx
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/core/health')"]
       interval: 20s
@@ -23,7 +27,32 @@ services:
       rabbitmq:
         condition: service_healthy
       ollama:
-        condition: service_started
+        condition: service_healthy
+      superdoc-mcp:
+        condition: service_healthy
+
+  superdoc-mcp:
+    image: node:20-alpine
+    container_name: scholarflow-superdoc-mcp
+    command:
+      - sh
+      - -lc
+      - >-
+        npx -y supergateway
+        --stdio "npx -y @superdoc-dev/mcp"
+        --outputTransport streamableHttp
+        --streamableHttpPath /mcp
+        --stateful
+        --port 8090
+        --healthEndpoint /healthz
+        --logLevel info
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8090/healthz"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+    volumes:
+      - docx_shared:/shared/docx
 
   frontend:
     build:
@@ -116,7 +145,13 @@ services:
       OLLAMA_HOST: http://0.0.0.0:11434
       OLLAMA_MODEL: gemma4:e2b
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
+      OLLAMA_KEEP_WARM_INTERVAL: ${OLLAMA_KEEP_WARM_INTERVAL:-90}
     entrypoint: ["/bin/sh", "/opt/ollama-start.sh"]
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "test -f /tmp/ollama-ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
     ports:
       - "11434:11434"
     volumes:
@@ -158,3 +193,4 @@ volumes:
   mysql_data:
   es_data:
   ollama_data:
+  docx_shared:

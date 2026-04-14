@@ -380,6 +380,18 @@ body {
   border-color: #c8a97a;
 }
 
+.chat-message.assistant .speaker-tag {
+  color: #6a6660;
+}
+
+.chat-message.assistant:not(.user) .bubble {
+  border-left: 4px solid #9f8f76;
+}
+
+.chat-message.assistant .speaker-tag:not(:empty) {
+  font-weight: 700;
+}
+
 .bubble p {
   margin: 0 0 6px;
 }

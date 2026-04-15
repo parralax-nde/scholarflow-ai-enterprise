@@ -24,7 +24,7 @@ const useUpdateURL = () => {
       .map((value) => value.replace('#', ''))
       .join('-');
     url.searchParams.set('colors', queryValue);
-    window.history.replaceState({}, '', `${url.pathname}?${url.searchParams.toString()}${url.hash}`);
+    window.history.replaceState({}, '', url.toString());
   }, [colors]);
 };
 

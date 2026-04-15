@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { setColors } from 'state/globalSlice';
 import { useAppDispatch, useAppSelector } from 'store/store-hooks';
 
 import { toApiUrl } from '@/lib/api';
+import { readAuthSession } from '@/lib/auth';
 
 type SavedPalette = {
   id: string;
@@ -23,11 +24,19 @@ const PaletteManager: React.FC = (): JSX.Element => {
 
   const canSave = useMemo(() => name.trim().length > 0 && !loading, [name, loading]);
 
-  const loadPalettes = async () => {
+  const authHeaders = (): Record<string, string> => {
+    const token = readAuthSession()?.access_token;
+    if (!token) return {};
+    return { Authorization: `Bearer ${token}` };
+  };
+
+  const loadPalettes = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch(toApiUrl('/colors/palettes'));
+      const response = await fetch(toApiUrl('/colors/palettes'), {
+        headers: authHeaders(),
+      });
       if (!response.ok) throw new Error('Failed to load palettes');
       const payload = (await response.json()) as SavedPalette[];
       setPalettes(payload);
@@ -36,7 +45,7 @@ const PaletteManager: React.FC = (): JSX.Element => {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   const handleSave = async () => {
     if (!canSave) return;
@@ -45,7 +54,7 @@ const PaletteManager: React.FC = (): JSX.Element => {
     try {
       const response = await fetch(toApiUrl('/colors/palettes'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ name: name.trim(), colors }),
       });
       if (!response.ok) throw new Error('Failed to save palette');
@@ -63,6 +72,7 @@ const PaletteManager: React.FC = (): JSX.Element => {
     try {
       const response = await fetch(toApiUrl(`/colors/palettes/${paletteId}`), {
         method: 'DELETE',
+        headers: authHeaders(),
       });
       if (!response.ok) throw new Error('Failed to delete palette');
       await loadPalettes();
@@ -78,8 +88,10 @@ const PaletteManager: React.FC = (): JSX.Element => {
 
   useEffect(() => {
     if (!isOpen) return;
-    void loadPalettes();
-  }, [isOpen]);
+    void loadPalettes().catch((err: unknown) =>
+      setError((err as Error)?.message || 'Failed to load palettes')
+    );
+  }, [isOpen, loadPalettes]);
 
   return (
     <div className='relative' onClick={(event) => event.stopPropagation()}>

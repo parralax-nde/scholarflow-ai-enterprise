@@ -1087,8 +1087,14 @@ def _default_docx_draft(seed_text: str) -> tuple[str, dict[str, Any], str]:
         "  <p>{{body}}</p>\n"
         "</doc>"
     )
-    filename = f"{re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-') or 'simplescholar-draft'}.docx"
+    filename = _sanitize_docx_filename(title)
     return template_xml, json_data, filename
+
+
+def _sanitize_docx_filename(raw_value: str) -> str:
+    safe_stem = re.sub(r"[^a-z0-9]+", "-", raw_value.lower()).strip("-")
+    safe_stem = safe_stem[:200].strip("-") or "simplescholar-draft"
+    return f"{safe_stem}.docx"
 
 
 def _normalize_docx_plan(payload: dict[str, Any], seed_text: str) -> tuple[str, dict[str, Any], str]:
@@ -1131,9 +1137,9 @@ def _normalize_docx_plan(payload: dict[str, Any], seed_text: str) -> tuple[str, 
     }
     suggested_filename = str(payload.get("filename") or "").strip()
     if suggested_filename:
-        filename = suggested_filename
-    if not filename.lower().endswith(".docx"):
-        filename = f"{filename}.docx"
+        filename = _sanitize_docx_filename(suggested_filename.replace(".docx", ""))
+    else:
+        filename = _sanitize_docx_filename(filename.replace(".docx", ""))
     return template_xml, json_data, filename
 
 

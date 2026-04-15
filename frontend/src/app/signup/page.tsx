@@ -5,9 +5,10 @@ import { useRouter } from 'next/navigation';
 import React, { useState } from 'react';
 import { useAppSelector } from 'store/store-hooks';
 
-import RealtimePageFrame from '@/components/realtime/RealtimePageFrame';
-import { type AuthSession, writeAuthSession } from '@/lib/auth';
 import { toApiUrl } from '@/lib/api';
+import { type AuthSession, writeAuthSession } from '@/lib/auth';
+
+import RealtimePageFrame from '@/components/realtime/RealtimePageFrame';
 
 export default function SignupPage() {
   const colors = useAppSelector((state) => state.global.colors);

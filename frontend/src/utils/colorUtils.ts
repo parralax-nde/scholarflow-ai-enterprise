@@ -12,6 +12,8 @@ export const hslToHex = (h: number, s: number, l: number) => {
   return `#${f(0)}${f(8)}${f(4)}`;
 };
 
+const MAX_PALETTE_GENERATION_ATTEMPTS = 32;
+
 const hexChannelToLinear = (hexChannel: string) => {
   // WCAG sRGB gamma expansion to linear RGB.
   const value = parseInt(hexChannel, 16) / 255;
@@ -79,7 +81,11 @@ const passesVisibilityRules = ({
 };
 
 export const randomColor = (isDarkMode: boolean) => {
-  for (let attempt = 0; attempt < 32; attempt += 1) {
+  for (
+    let attempt = 0;
+    attempt < MAX_PALETTE_GENERATION_ATTEMPTS;
+    attempt += 1
+  ) {
     const hue = Math.floor(Math.random() * 360);
     const saturation = Math.floor(Math.random() * 32) + 48;
     const bgLightness = isDarkMode
@@ -91,7 +97,9 @@ export const randomColor = (isDarkMode: boolean) => {
 
     const palette = {
       backgroundColor: hslToHex((hue + 180) % 360, saturation - 8, bgLightness),
-      textColor: '#000000',
+      textColor: pickReadableTextColor(
+        hslToHex((hue + 180) % 360, saturation - 8, bgLightness)
+      ),
       primaryColor: hslToHex(hue, saturation + 8, toneBase),
       secondaryColor: hslToHex(
         (hue + 200 + Math.floor(Math.random() * 40)) % 360,
@@ -104,8 +112,6 @@ export const randomColor = (isDarkMode: boolean) => {
         isDarkMode ? toneBase + 10 : toneBase - 8
       ),
     };
-
-    palette.textColor = pickReadableTextColor(palette.backgroundColor);
 
     if (passesVisibilityRules(palette)) {
       return palette;

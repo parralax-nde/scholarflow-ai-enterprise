@@ -4,9 +4,10 @@ import Link from 'next/link';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAppSelector } from 'store/store-hooks';
 
-import RealtimePageFrame from '@/components/realtime/RealtimePageFrame';
-import { readAuthSession } from '@/lib/auth';
 import { toApiUrl } from '@/lib/api';
+import { readAuthSession } from '@/lib/auth';
+
+import RealtimePageFrame from '@/components/realtime/RealtimePageFrame';
 
 type Conversation = {
   id: string;
@@ -34,6 +35,16 @@ type AuthUser = {
   name: string;
   role: 'free' | 'enterprise' | string;
 };
+
+type StreamingEvent = {
+  type?: string;
+  content?: string;
+  error?: string;
+  conversation_id?: string;
+};
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const normalizeError = (err: unknown) => {
   const message = (err as Error)?.message || 'Unknown error';
@@ -223,19 +234,9 @@ export default function ChatPage() {
           const line = rawLine.trim();
           if (!line) continue;
 
-          let event: {
-            type?: string;
-            content?: string;
-            error?: string;
-            conversation_id?: string;
-          };
+          let event: StreamingEvent;
           try {
-            event = JSON.parse(line) as {
-              type?: string;
-              content?: string;
-              error?: string;
-              conversation_id?: string;
-            };
+            event = JSON.parse(line) as StreamingEvent;
           } catch {
             throw new Error('Malformed streaming response payload');
           }
@@ -346,7 +347,15 @@ export default function ChatPage() {
       return;
     }
     if (!docxSession) return;
-    window.open(toApiUrl(`/export/docx/files/${docxSession.docx_id}`), '_blank', 'noopener,noreferrer');
+    if (!UUID_PATTERN.test(docxSession.docx_id)) {
+      setError('Unable to download document. Please generate it again.');
+      return;
+    }
+    window.open(
+      toApiUrl(`/export/docx/files/${docxSession.docx_id}`),
+      '_blank',
+      'noopener,noreferrer'
+    );
   };
 
   const handleAppendToDocx = async () => {
@@ -577,7 +586,8 @@ export default function ChatPage() {
           <div className='flex-1 overflow-hidden'>
             {docxSession ? (
               <iframe
-                title='SimpleScholar DOCX preview'
+                title={`SimpleScholar DOCX preview: ${docxSession.filename}`}
+                aria-label={`SimpleScholar DOCX preview for ${docxSession.filename}`}
                 src={`${docxSession.viewer_path}?v=${docxRefreshKey}`}
                 className='h-full min-h-[380px] w-full border-0'
               />

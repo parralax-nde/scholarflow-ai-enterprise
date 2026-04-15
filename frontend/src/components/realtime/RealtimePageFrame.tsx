@@ -4,8 +4,8 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import React, { useEffect, useMemo, useState } from 'react';
 
-import useOnLoad from '@/hooks/useOnload';
 import { clearAuthSession, readAuthSession } from '@/lib/auth';
+import useOnLoad from '@/hooks/useOnload';
 
 import ToolBar from '@/components/ToolBar/ToolBar';
 

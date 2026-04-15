@@ -4,8 +4,9 @@ import Link from 'next/link';
 import React, { useEffect, useState } from 'react';
 import { useAppSelector } from 'store/store-hooks';
 
-import RealtimePageFrame from '@/components/realtime/RealtimePageFrame';
 import { toApiUrl } from '@/lib/api';
+
+import RealtimePageFrame from '@/components/realtime/RealtimePageFrame';
 
 export default function HomePage() {
   const colors = useAppSelector((state) => state.global.colors);

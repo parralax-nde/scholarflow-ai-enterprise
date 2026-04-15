@@ -48,6 +48,8 @@ PALETTE_DB_PATH = Path(
 DOCX_ARTIFACT_DIR = Path(os.getenv("DOCX_ARTIFACT_DIR", str(Path(gettempdir()) / "scholarflow" / "docx_artifacts")))
 DEFAULT_CONVERSATION_TITLE = "New chat"
 MAX_CONVERSATION_TITLE_LENGTH = 60
+MAX_DOCX_FILENAME_STEM_LENGTH = 200
+MAX_DOCX_TRANSCRIPT_LINES = 20
 
 users_by_google_sub: dict[str, dict[str, Any]] = {}
 users_by_email: dict[str, dict[str, Any]] = {}
@@ -1205,7 +1207,7 @@ def _default_docx_draft(seed_text: str) -> tuple[str, dict[str, Any], str]:
 
 def _sanitize_docx_filename(raw_value: str) -> str:
     safe_stem = re.sub(r"[^a-z0-9]+", "-", raw_value.lower()).strip("-")
-    safe_stem = safe_stem[:200].strip("-") or "simplescholar-draft"
+    safe_stem = safe_stem[:MAX_DOCX_FILENAME_STEM_LENGTH].strip("-") or "simplescholar-draft"
     return f"{safe_stem}.docx"
 
 
@@ -1274,7 +1276,7 @@ def _build_docx_template_json_prompt(
     current_json_data: dict[str, Any] | None,
 ) -> str:
     transcript_lines = [f"{item['role']}: {item['content']}" for item in source_messages if item.get("content")]
-    transcript = "\n".join(transcript_lines[-20:])
+    transcript = "\n".join(transcript_lines[-MAX_DOCX_TRANSCRIPT_LINES:])
     fields = ", ".join([str(field) for field in template.get("fields", [])]) or "title, author.name, body"
     default_json = json.dumps(template.get("default_json_data", {}), ensure_ascii=False)
     existing_json = json.dumps(current_json_data or {}, ensure_ascii=False)

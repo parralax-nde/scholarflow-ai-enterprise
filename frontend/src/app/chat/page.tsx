@@ -367,6 +367,15 @@ export default function ChatPage() {
     setJsonStreamDraft('');
 
     try {
+      let currentJsonDraft: Record<string, unknown> = {};
+      if (templateJsonDraft.trim()) {
+        try {
+          currentJsonDraft = JSON.parse(templateJsonDraft) as Record<string, unknown>;
+        } catch {
+          throw new Error('Template JSON is invalid. Fix the JSON syntax and try again.');
+        }
+      }
+
       const streamResponse = await fetch(toApiUrl('/ai/docx/json/stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -377,7 +386,7 @@ export default function ChatPage() {
             role: message.role,
             content: message.content,
           })),
-          current_json_data: templateJsonDraft ? JSON.parse(templateJsonDraft) : {},
+          current_json_data: currentJsonDraft,
         }),
       });
       if (!streamResponse.ok || !streamResponse.body) {
@@ -484,7 +493,12 @@ export default function ChatPage() {
     if (!templateXml || !templateJsonDraft.trim()) return;
 
     try {
-      const parsedJson = JSON.parse(templateJsonDraft) as Record<string, unknown>;
+      let parsedJson: Record<string, unknown>;
+      try {
+        parsedJson = JSON.parse(templateJsonDraft) as Record<string, unknown>;
+      } catch {
+        throw new Error('Template JSON is invalid. Fix the JSON syntax before applying.');
+      }
       const response = await fetch(toApiUrl('/export/docx/session'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

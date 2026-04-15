@@ -244,7 +244,12 @@ async def ai_docx_json_stream(body: DocxJsonStreamRequest) -> StreamingResponse:
     seed_text = (body.prompt or "").strip()
     if not seed_text:
         user_like_messages = [m["content"] for m in source_messages if m["role"] == "user"]
-        seed_text = user_like_messages[-1].strip() if user_like_messages else source_messages[-1]["content"]
+        if user_like_messages:
+            seed_text = user_like_messages[-1].strip()
+        elif source_messages:
+            seed_text = source_messages[-1]["content"]
+        else:
+            seed_text = "general document"
 
     template = _get_docx_template(body.template_id)
     prompt = _build_docx_template_json_prompt(template, seed_text, source_messages, body.current_json_data)

@@ -39,6 +39,8 @@ SUPERDOC_MCP_URL = os.getenv("SUPERDOC_MCP_URL", "http://localhost:8090/mcp")
 MAX_CONTEXT_MESSAGES = int(os.getenv("MAX_CONTEXT_MESSAGES", "12"))
 FREE_PAGE_ALLOWANCE = int(os.getenv("FREE_PAGE_ALLOWANCE", "100"))
 PAGE_PRICE_USD = float(os.getenv("PAGE_PRICE_USD", "0.1"))
+DEFAULT_ADMIN_EMAIL = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@gmail.com").strip().lower()
+DEFAULT_ADMIN_PASSWORD = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin2026")
 CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path(gettempdir()) / "scholarflow" / "chat_history.db")))
 PALETTE_DB_PATH = Path(
     os.getenv("PALETTE_DB_PATH", str(Path(gettempdir()) / "scholarflow" / "color_palettes.json"))
@@ -320,6 +322,7 @@ async def _warm_ollama_model() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     register_self()
+    _ensure_default_admin_user()
     asyncio.create_task(_warm_ollama_model())
     yield
 
@@ -1220,6 +1223,24 @@ def _hash_password(password: str, salt: str) -> str:
 
 def _verify_password(password: str, salt: str, expected_hash: str) -> bool:
     return hmac.compare_digest(_hash_password(password, salt), expected_hash)
+
+
+def _ensure_default_admin_user() -> None:
+    if not DEFAULT_ADMIN_EMAIL or not DEFAULT_ADMIN_PASSWORD:
+        return
+    if DEFAULT_ADMIN_EMAIL in users_by_email:
+        return
+
+    salt = secrets.token_hex(16)
+    users_by_email[DEFAULT_ADMIN_EMAIL] = {
+        "id": str(uuid.uuid4()),
+        "email": DEFAULT_ADMIN_EMAIL,
+        "name": "Admin",
+        "role": "enterprise",
+        "auth_provider": "password",
+        "password_salt": salt,
+        "password_hash": _hash_password(DEFAULT_ADMIN_PASSWORD, salt),
+    }
 
 
 def _scopes_for_role(role: str) -> list[str]:

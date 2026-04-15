@@ -18,6 +18,7 @@ const navLinks = [
   { href: '/', label: 'Features' },
   { href: '/privacy-policy', label: 'Privacy' },
 ];
+const ADMIN_EMAIL = 'admin@gmail.com';
 
 const pageTitleByPath: Record<string, string> = {
   '/': 'SimpleScholar — AI Research Copilot',
@@ -34,10 +35,12 @@ export default function RealtimePageFrame({ children }: RealtimePageFrameProps) 
   const { colors, handleCloseColorPickers } = useOnLoad();
   const pathname = usePathname();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
     const session = readAuthSession();
     setIsAuthenticated(Boolean(session?.access_token));
+    setIsAdmin((session?.user?.email || '').toLowerCase() === ADMIN_EMAIL);
   }, [pathname]);
 
   useEffect(() => {
@@ -55,6 +58,7 @@ export default function RealtimePageFrame({ children }: RealtimePageFrameProps) 
           onClick={() => {
             clearAuthSession();
             setIsAuthenticated(false);
+            setIsAdmin(false);
           }}
         >
           Log out
@@ -82,9 +86,11 @@ export default function RealtimePageFrame({ children }: RealtimePageFrameProps) 
       }}
       onClick={handleCloseColorPickers}
     >
-      <div className='absolute left-0 top-0 z-40'>
-        <ToolBar />
-      </div>
+      {isAdmin && (
+        <div className='absolute left-0 top-0 z-40'>
+          <ToolBar />
+        </div>
+      )}
 
       <div className='mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-7xl flex-col'>
         <header

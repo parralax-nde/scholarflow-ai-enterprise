@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import ColorsBar from '@/components/ColorPicker/ColorsBar';
 import DarkModeToggle from '@/components/ToolBar/Partials/DarkModeToggle';
 import ExportColorsButton from '@/components/ToolBar/Partials/ExportColorsButton';
+import PaletteManager from '@/components/ToolBar/Partials/PaletteManager';
 import RandomColorsButton from '@/components/ToolBar/Partials/RandomColorsButton';
 import ShareUrl from '@/components/ToolBar/Partials/ShareUrl';
 import ToolBarResponsive from '@/components/ToolBar/ToolBarResponsive';
@@ -27,6 +28,7 @@ const ToolBar: React.FC = (): JSX.Element => {
         <ColorsBar />
         <RandomColorsButton />
         <DarkModeToggle />
+        <PaletteManager />
         <ExportColorsButton />
         <ShareUrl />
       </div>

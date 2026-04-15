@@ -12,27 +12,109 @@ export const hslToHex = (h: number, s: number, l: number) => {
   return `#${f(0)}${f(8)}${f(4)}`;
 };
 
-export const randomColor = (isDarkMode: boolean) => {
-  const hue = Math.floor(Math.random() * 360);
-  const saturation = Math.floor(Math.random() * 30) + 50;
-  let lightness = Math.floor(Math.random() * 20) + 40;
+const hexChannelToLinear = (hexChannel: string) => {
+  const value = parseInt(hexChannel, 16) / 255;
+  if (value <= 0.03928) {
+    return value / 12.92;
+  }
+  return ((value + 0.055) / 1.055) ** 2.4;
+};
 
-  if (isDarkMode) {
-    lightness = Math.floor(Math.random() * 20) + 40 - 25;
-  } else {
-    lightness = Math.floor(Math.random() * 20) + 40 + 25;
+const luminance = (hex: string) => {
+  const clean = hex.replace('#', '');
+  const r = hexChannelToLinear(clean.slice(0, 2));
+  const g = hexChannelToLinear(clean.slice(2, 4));
+  const b = hexChannelToLinear(clean.slice(4, 6));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+
+const contrastRatio = (colorA: string, colorB: string) => {
+  const l1 = luminance(colorA);
+  const l2 = luminance(colorB);
+  const brightest = Math.max(l1, l2);
+  const darkest = Math.min(l1, l2);
+  return (brightest + 0.05) / (darkest + 0.05);
+};
+
+const pickReadableTextColor = (background: string) => {
+  const blackContrast = contrastRatio(background, '#000000');
+  const whiteContrast = contrastRatio(background, '#FFFFFF');
+  return blackContrast >= whiteContrast ? '#000000' : '#FFFFFF';
+};
+
+const passesVisibilityRules = ({
+  backgroundColor,
+  textColor,
+  primaryColor,
+  secondaryColor,
+  accentColor,
+}: {
+  backgroundColor: string;
+  textColor: string;
+  primaryColor: string;
+  secondaryColor: string;
+  accentColor: string;
+}) => {
+  const bgContrastOk =
+    contrastRatio(backgroundColor, primaryColor) >= 2.2 &&
+    contrastRatio(backgroundColor, secondaryColor) >= 2.0 &&
+    contrastRatio(backgroundColor, accentColor) >= 2.0;
+
+  const textContrastOk =
+    contrastRatio(textColor, backgroundColor) >= 7 &&
+    contrastRatio(textColor, primaryColor) >= 2.2 &&
+    contrastRatio(textColor, secondaryColor) >= 1.6 &&
+    contrastRatio(textColor, accentColor) >= 1.6;
+
+  const pairContrastOk =
+    contrastRatio(primaryColor, secondaryColor) >= 1.15 &&
+    contrastRatio(primaryColor, accentColor) >= 1.15 &&
+    contrastRatio(secondaryColor, accentColor) >= 1.1;
+
+  return bgContrastOk && textContrastOk && pairContrastOk;
+};
+
+export const randomColor = (isDarkMode: boolean) => {
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const hue = Math.floor(Math.random() * 360);
+    const saturation = Math.floor(Math.random() * 32) + 48;
+    const bgLightness = isDarkMode
+      ? Math.floor(Math.random() * 14) + 8
+      : Math.floor(Math.random() * 14) + 84;
+    const toneBase = isDarkMode
+      ? Math.floor(Math.random() * 20) + 46
+      : Math.floor(Math.random() * 22) + 30;
+
+    const palette = {
+      backgroundColor: hslToHex((hue + 180) % 360, saturation - 8, bgLightness),
+      textColor: '#000000',
+      primaryColor: hslToHex(hue, saturation + 8, toneBase),
+      secondaryColor: hslToHex(
+        (hue + 200 + Math.floor(Math.random() * 40)) % 360,
+        Math.max(40, saturation - 6),
+        isDarkMode ? toneBase + 6 : toneBase - 4
+      ),
+      accentColor: hslToHex(
+        (hue + 55 + Math.floor(Math.random() * 22)) % 360,
+        saturation + 12,
+        isDarkMode ? toneBase + 10 : toneBase - 8
+      ),
+    };
+
+    palette.textColor = pickReadableTextColor(palette.backgroundColor);
+
+    if (passesVisibilityRules(palette)) {
+      return palette;
+    }
   }
 
+  const fallbackBackground = isDarkMode ? '#111827' : '#F8FAFC';
   return {
-    backgroundColor: hslToHex(
-      (hue + 180) % 360,
-      saturation,
-      isDarkMode ? 10 : 90
-    ),
-    textColor: isDarkMode ? '#fff' : '#000',
-    primaryColor: hslToHex(hue, saturation, lightness),
-    secondaryColor: hslToHex((hue + 180) % 360, saturation, lightness),
-    accentColor: hslToHex((hue + 60) % 360, saturation, lightness),
+    backgroundColor: fallbackBackground,
+    textColor: pickReadableTextColor(fallbackBackground),
+    primaryColor: isDarkMode ? '#60A5FA' : '#1D4ED8',
+    secondaryColor: isDarkMode ? '#22D3EE' : '#0F766E',
+    accentColor: isDarkMode ? '#F472B6' : '#BE185D',
   };
 };
 

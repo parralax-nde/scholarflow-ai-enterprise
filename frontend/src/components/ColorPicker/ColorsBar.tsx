@@ -20,7 +20,7 @@ const ColorsBar: React.FC = (): JSX.Element => {
       colorPickerComponent: (
         <SketchPicker
           color={colors.textColor.color as string}
-          onChangeComplete={(color) => onColorChange(color.hex, 'textColor')}
+          onChange={(color) => onColorChange(color.hex, 'textColor')}
         />
       ),
     },
@@ -30,7 +30,7 @@ const ColorsBar: React.FC = (): JSX.Element => {
       colorPickerComponent: (
         <SketchPicker
           color={colors.backgroundColor.color as string}
-          onChangeComplete={(color) =>
+          onChange={(color) =>
             onColorChange(color.hex, 'backgroundColor')
           }
         />
@@ -42,7 +42,7 @@ const ColorsBar: React.FC = (): JSX.Element => {
       colorPickerComponent: (
         <SketchPicker
           color={colors.primaryColor.color as string}
-          onChangeComplete={(color) => onColorChange(color.hex, 'primaryColor')}
+          onChange={(color) => onColorChange(color.hex, 'primaryColor')}
         />
       ),
     },
@@ -52,7 +52,7 @@ const ColorsBar: React.FC = (): JSX.Element => {
       colorPickerComponent: (
         <SketchPicker
           color={colors.secondaryColor.color as string}
-          onChangeComplete={(color) =>
+          onChange={(color) =>
             onColorChange(color.hex, 'secondaryColor')
           }
         />
@@ -64,7 +64,7 @@ const ColorsBar: React.FC = (): JSX.Element => {
       colorPickerComponent: (
         <SketchPicker
           color={colors.accentColor.color as string}
-          onChangeComplete={(color) => onColorChange(color.hex, 'accentColor')}
+          onChange={(color) => onColorChange(color.hex, 'accentColor')}
         />
       ),
     },

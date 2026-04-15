@@ -3,6 +3,7 @@ import React from 'react';
 import ColorsBar from '@/components/ColorPicker/ColorsBar';
 import DarkModeToggle from '@/components/ToolBar/Partials/DarkModeToggle';
 import ExportColorsButton from '@/components/ToolBar/Partials/ExportColorsButton';
+import PaletteManager from '@/components/ToolBar/Partials/PaletteManager';
 import RandomColorsButton from '@/components/ToolBar/Partials/RandomColorsButton';
 import ShareUrl from '@/components/ToolBar/Partials/ShareUrl';
 
@@ -20,6 +21,7 @@ const ToolBarResponsive: React.FC<IToolBarResponsiveProps> = ({
           <ColorsBar />
           <DarkModeToggle />
           <RandomColorsButton />
+          <PaletteManager />
           <ExportColorsButton />
           <ShareUrl />
         </div>

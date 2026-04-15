@@ -14,19 +14,19 @@ const useOnLoad = () => {
     (colorPicker) => colorPicker
   );
 
-  let colorsQuery: string | undefined;
-  if (typeof window !== 'undefined') {
-    colorsQuery = window?.location?.search;
-  }
   useApplyColorsFromURL();
   useUpdateURL();
   useToolbarController();
 
   useEffect(() => {
-    if (!colorsQuery) {
+    if (typeof window === 'undefined') return;
+    const hasColorsQuery = Boolean(
+      new URLSearchParams(window.location.search).get('colors')
+    );
+    if (!hasColorsQuery) {
       dispatch(randomizeColors());
     }
-  }, [colorsQuery, dispatch]);
+  }, [dispatch]);
 
   const handleCloseColorPickers = () => {
     if (isColorPickerOpen) {

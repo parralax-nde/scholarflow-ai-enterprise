@@ -127,6 +127,7 @@ export default function ChatPage() {
     setIsSending(true);
 
     let assistantContent = '';
+    let hasTokenEvent = false;
 
     try {
       const response = await fetch(`${API_BASE_URL}/ai/chat/stream`, {
@@ -168,14 +169,23 @@ export default function ChatPage() {
             throw new Error(event.error || 'Streaming failed');
           }
 
-          if (event.type === 'token' || event.type === 'agent_delta') {
-            const delta = event.content ?? '';
-            if (!delta) continue;
-            assistantContent += delta;
-            setAssistantDraft(assistantContent);
+            if (event.type === 'token') {
+              const delta = event.content ?? '';
+              if (!delta) continue;
+              hasTokenEvent = true;
+              assistantContent += delta;
+              setAssistantDraft(assistantContent);
+              continue;
+            }
+
+            if (event.type === 'agent_delta' && !hasTokenEvent) {
+              const delta = event.content ?? '';
+              if (!delta) continue;
+              assistantContent += delta;
+              setAssistantDraft(assistantContent);
+            }
           }
         }
-      }
 
       if (assistantContent.trim()) {
         setMessages((prev) => [...prev, { role: 'assistant', content: assistantContent, id: `assistant-${Date.now()}` }]);
@@ -192,26 +202,42 @@ export default function ChatPage() {
 
   return (
     <RealtimePageFrame>
-      <section className='grid min-h-[calc(100vh-12rem)] gap-4 lg:grid-cols-[280px_1fr]'>
-        <aside className='border p-3' style={{ borderColor: `${colors.secondaryColor.color}66`, backgroundColor: `${colors.secondaryColor.color}1A` }}>
+      <section className='grid min-h-[calc(100vh-12rem)] gap-4 lg:grid-cols-[300px_1fr]'>
+        <aside
+          className='rounded-2xl border p-4 backdrop-blur'
+          style={{
+            borderColor: `${colors.secondaryColor.color}55`,
+            backgroundColor: `${colors.secondaryColor.color}20`,
+          }}
+        >
           <button
             type='button'
-            className='mb-3 w-full border px-3 py-2 text-sm font-medium'
-            style={{ backgroundColor: colors.primaryColor.color as string, color: colors.backgroundColor.color as string, borderColor: colors.primaryColor.color as string }}
+            className='mb-3 w-full rounded-xl border px-3 py-2 text-sm font-medium transition-opacity hover:opacity-90'
+            style={{
+              backgroundColor: colors.primaryColor.color as string,
+              color: colors.backgroundColor.color as string,
+              borderColor: `${colors.primaryColor.color}CC`,
+            }}
             onClick={handleNewConversation}
           >
-            New conversation
+            + New chat
           </button>
 
-          <div className='max-h-[calc(100vh-19rem)] space-y-2 overflow-y-auto'>
+          <div className='max-h-[calc(100vh-20rem)] space-y-2 overflow-y-auto'>
             {conversations.map((conversation) => (
               <button
                 key={conversation.id}
                 type='button'
-                className='w-full border px-3 py-2 text-left text-sm'
+                className='w-full rounded-xl border px-3 py-2 text-left text-sm transition-all'
                 style={{
-                  borderColor: activeConversationId === conversation.id ? colors.accentColor.color as string : `${colors.secondaryColor.color}66`,
-                  backgroundColor: activeConversationId === conversation.id ? `${colors.accentColor.color}22` : 'transparent',
+                  borderColor:
+                    activeConversationId === conversation.id
+                      ? (colors.accentColor.color as string)
+                      : `${colors.secondaryColor.color}55`,
+                  backgroundColor:
+                    activeConversationId === conversation.id
+                      ? `${colors.accentColor.color}24`
+                      : `${colors.backgroundColor.color}55`,
                 }}
                 onClick={() => setActiveConversationId(conversation.id)}
               >
@@ -222,20 +248,36 @@ export default function ChatPage() {
           </div>
         </aside>
 
-        <div className='flex min-h-0 flex-col border' style={{ borderColor: `${colors.secondaryColor.color}66`, backgroundColor: `${colors.secondaryColor.color}0F` }}>
-          <header className='border-b px-4 py-3' style={{ borderColor: `${colors.secondaryColor.color}66` }}>
+        <div
+          className='flex min-h-0 flex-col rounded-2xl border shadow-sm'
+          style={{
+            borderColor: `${colors.secondaryColor.color}55`,
+            backgroundColor: `${colors.backgroundColor.color}A6`,
+          }}
+        >
+          <header
+            className='flex items-center justify-between border-b px-5 py-3'
+            style={{ borderColor: `${colors.secondaryColor.color}55` }}
+          >
             <h1 className='text-lg font-semibold'>{activeConversation?.title ?? 'Chat'}</h1>
+            <p className='text-xs opacity-70'>Realtime token streaming</p>
           </header>
 
-          <div className='flex-1 space-y-3 overflow-y-auto px-4 py-4'>
+          <div className='flex-1 space-y-4 overflow-y-auto px-5 py-5'>
             {messages.map((message) => (
               <article
                 key={message.id ?? `${message.role}-${message.content.slice(0, 16)}`}
-                className='max-w-[85%] border px-3 py-2 text-sm'
+                className='max-w-[86%] rounded-2xl border px-4 py-3 text-sm leading-relaxed'
                 style={{
                   marginLeft: message.role === 'user' ? 'auto' : 0,
-                  borderColor: message.role === 'user' ? `${colors.primaryColor.color}99` : `${colors.secondaryColor.color}66`,
-                  backgroundColor: message.role === 'user' ? `${colors.primaryColor.color}22` : `${colors.secondaryColor.color}16`,
+                  borderColor:
+                    message.role === 'user'
+                      ? `${colors.primaryColor.color}88`
+                      : `${colors.secondaryColor.color}50`,
+                  backgroundColor:
+                    message.role === 'user'
+                      ? `${colors.primaryColor.color}20`
+                      : `${colors.secondaryColor.color}12`,
                 }}
               >
                 {message.content}
@@ -243,7 +285,13 @@ export default function ChatPage() {
             ))}
 
             {assistantDraft && (
-              <article className='max-w-[85%] border px-3 py-2 text-sm' style={{ borderColor: `${colors.accentColor.color}99`, backgroundColor: `${colors.accentColor.color}16` }}>
+              <article
+                className='max-w-[86%] rounded-2xl border px-4 py-3 text-sm leading-relaxed'
+                style={{
+                  borderColor: `${colors.accentColor.color}80`,
+                  backgroundColor: `${colors.accentColor.color}14`,
+                }}
+              >
                 {assistantDraft}
               </article>
             )}
@@ -251,12 +299,11 @@ export default function ChatPage() {
 
           {error && <p className='px-4 pb-2 text-sm text-red-500'>{error}</p>}
 
-          <div className='border-t p-3' style={{ borderColor: `${colors.secondaryColor.color}66` }}>
-            <div className='flex gap-2'>
+          <div className='border-t p-4' style={{ borderColor: `${colors.secondaryColor.color}55` }}>
+            <div className='flex gap-2 rounded-2xl border p-2' style={{ borderColor: `${colors.secondaryColor.color}50` }}>
               <input
-                className='w-full border bg-transparent px-3 py-2 text-sm outline-none'
-                style={{ borderColor: `${colors.secondaryColor.color}80` }}
-                placeholder='Ask ScholarFlow AI…'
+                className='w-full bg-transparent px-3 py-2 text-sm outline-none'
+                placeholder='Message ScholarFlow…'
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={(event) => {
@@ -272,8 +319,12 @@ export default function ChatPage() {
                   void handleSend();
                 }}
                 disabled={isSending}
-                className='border px-4 py-2 text-sm font-medium disabled:opacity-60'
-                style={{ backgroundColor: colors.primaryColor.color as string, color: colors.backgroundColor.color as string, borderColor: colors.primaryColor.color as string }}
+                className='rounded-xl border px-4 py-2 text-sm font-medium disabled:opacity-60'
+                style={{
+                  backgroundColor: colors.primaryColor.color as string,
+                  color: colors.backgroundColor.color as string,
+                  borderColor: colors.primaryColor.color as string,
+                }}
               >
                 {isSending ? 'Streaming…' : 'Send'}
               </button>

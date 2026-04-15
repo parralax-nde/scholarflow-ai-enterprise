@@ -37,6 +37,9 @@ OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "-1")
 SUPERDOC_MCP_URL = os.getenv("SUPERDOC_MCP_URL", "http://localhost:8090/mcp")
 MAX_CONTEXT_MESSAGES = int(os.getenv("MAX_CONTEXT_MESSAGES", "12"))
 CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path(gettempdir()) / "scholarflow" / "chat_history.db")))
+PALETTE_DB_PATH = Path(
+    os.getenv("PALETTE_DB_PATH", str(Path(gettempdir()) / "scholarflow" / "color_palettes.json"))
+)
 DOCX_ARTIFACT_DIR = Path(os.getenv("DOCX_ARTIFACT_DIR", str(Path(gettempdir()) / "scholarflow" / "docx_artifacts")))
 DEFAULT_CONVERSATION_TITLE = "New chat"
 MAX_CONVERSATION_TITLE_LENGTH = 60
@@ -55,6 +58,7 @@ doc_crdt_state: dict[str, dict[str, Any]] = defaultdict(
     lambda: {"clock": 0, "text": "", "cursor": {}, "operations": [], "applied_operation_ids": set()}
 )
 chat_db_initialized = False
+palette_db_initialized = False
 DOCX_ARTIFACT_TTL_SECONDS = 1800
 docx_artifacts: dict[str, dict[str, Any]] = {}
 superdoc_mcp_session_id: str | None = None
@@ -91,6 +95,65 @@ def _utc_now_iso() -> str:
 def _connect_chat_db() -> sqlite3.Connection:
     _init_chat_db()
     return sqlite3.connect(CHAT_DB_PATH)
+
+
+def _init_palette_db() -> None:
+    global palette_db_initialized
+    if palette_db_initialized:
+        return
+    PALETTE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not PALETTE_DB_PATH.exists():
+        PALETTE_DB_PATH.write_text("[]", encoding="utf-8")
+    palette_db_initialized = True
+
+
+def _read_palette_docs() -> list[dict[str, Any]]:
+    _init_palette_db()
+    try:
+        payload = json.loads(PALETTE_DB_PATH.read_text(encoding="utf-8") or "[]")
+    except json.JSONDecodeError:
+        payload = []
+    if not isinstance(payload, list):
+        return []
+    return [entry for entry in payload if isinstance(entry, dict)]
+
+
+def _write_palette_docs(items: list[dict[str, Any]]) -> None:
+    _init_palette_db()
+    safe_items = [entry for entry in items if isinstance(entry, dict)]
+    temp_path = PALETTE_DB_PATH.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(safe_items, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(PALETTE_DB_PATH)
+
+
+def _list_color_palettes() -> list[dict[str, Any]]:
+    docs = _read_palette_docs()
+    docs.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+    return docs
+
+
+def _create_color_palette(name: str, colors: dict[str, Any]) -> dict[str, Any]:
+    docs = _read_palette_docs()
+    now = _utc_now_iso()
+    entry = {
+        "id": str(uuid.uuid4()),
+        "name": name.strip(),
+        "colors": colors,
+        "created_at": now,
+        "updated_at": now,
+    }
+    docs.append(entry)
+    _write_palette_docs(docs)
+    return entry
+
+
+def _delete_color_palette(palette_id: str) -> bool:
+    docs = _read_palette_docs()
+    filtered = [entry for entry in docs if str(entry.get("id")) != palette_id]
+    if len(filtered) == len(docs):
+        return False
+    _write_palette_docs(filtered)
+    return True
 
 
 def _init_chat_db() -> None:
@@ -298,6 +361,24 @@ class ChatStreamRequest(BaseModel):
 
 class ConversationCreateRequest(BaseModel):
     title: str | None = Field(default=None, max_length=MAX_CONVERSATION_TITLE_LENGTH)
+
+
+class PaletteColorEntry(BaseModel):
+    color: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
+    isLocked: bool = False
+
+
+class PaletteColorsPayload(BaseModel):
+    textColor: PaletteColorEntry
+    backgroundColor: PaletteColorEntry
+    primaryColor: PaletteColorEntry
+    secondaryColor: PaletteColorEntry
+    accentColor: PaletteColorEntry
+
+
+class ColorPaletteCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    colors: PaletteColorsPayload
 
 
 class SimilarityRequest(BaseModel):
@@ -1180,4 +1261,3 @@ def _merge_crdt_operation(doc_id: str, operation: CrdtOperation) -> dict[str, An
     state["text"] = merged_text
     state["cursor"] = cursor_map
     return {"doc_id": doc_id, "clock": state["clock"], "text": state["text"], "cursor": state["cursor"]}
-

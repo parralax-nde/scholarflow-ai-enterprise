@@ -97,6 +97,23 @@ def auth_login(body: EmailPasswordLoginRequest) -> dict[str, Any]:
     return _issue_tokens_for_user(public_user)
 
 
+@app.get("/colors/palettes")
+def list_color_palettes() -> list[dict[str, Any]]:
+    return _list_color_palettes()
+
+
+@app.post("/colors/palettes")
+def create_color_palette(body: ColorPaletteCreateRequest) -> dict[str, Any]:
+    return _create_color_palette(body.name, body.colors.model_dump())
+
+
+@app.delete("/colors/palettes/{palette_id}")
+def delete_color_palette(palette_id: str) -> dict[str, Any]:
+    if not _delete_color_palette(palette_id):
+        raise HTTPException(status_code=404, detail="palette not found")
+    return {"deleted": True, "id": palette_id}
+
+
 @app.get("/ai/conversations")
 def ai_list_conversations() -> list[dict[str, Any]]:
     return _list_conversations()

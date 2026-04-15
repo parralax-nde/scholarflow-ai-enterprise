@@ -9,6 +9,27 @@ const useToolbarController = () => {
 
   useEffect(() => {
     const url = window.location.href;
+    const isEditableTarget = (target: EventTarget | null) => {
+      const element = target as HTMLElement | null;
+      if (!element) return false;
+      const tagName = element.tagName.toLowerCase();
+      return (
+        tagName === 'input' ||
+        tagName === 'textarea' ||
+        tagName === 'select' ||
+        element.isContentEditable
+      );
+    };
+    const isToolbarVisible = () =>
+      Array.from(document.querySelectorAll('[data-toolbar-hotkeys="enabled"]')).some(
+        (node) => {
+          const element = node as HTMLElement;
+          return (
+            element.getClientRects().length > 0 &&
+            window.getComputedStyle(element).visibility !== 'hidden'
+          );
+        }
+      );
 
     const handleToggleDarkMode = () => {
       dispatch(toggleDarkMode());
@@ -21,7 +42,9 @@ const useToolbarController = () => {
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (isEditableTarget(e.target)) return;
       if (e.key === ' ') {
+        if (!isToolbarVisible()) return;
         e.preventDefault();
         handleRandomizeColors();
       }

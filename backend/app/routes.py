@@ -198,7 +198,6 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
         media_type="application/x-ndjson",
         headers={
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         }
     )

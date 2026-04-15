@@ -42,12 +42,16 @@ type StreamingEvent = {
   error?: string;
   conversation_id?: string;
 };
+type StreamPhase = 'idle' | 'thinking' | 'typing';
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const normalizeError = (err: unknown) => {
   const message = (err as Error)?.message || 'Unknown error';
+  if (/http2_protocol_error/i.test(message)) {
+    return 'Streaming transport was interrupted (HTTP/2 protocol error). Please retry the request.';
+  }
   if (/failed to fetch/i.test(message)) {
     return 'Failed to fetch service. Confirm backend/API gateway is reachable.';
   }
@@ -65,6 +69,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [assistantDraft, setAssistantDraft] = useState('');
+  const [streamPhase, setStreamPhase] = useState<StreamPhase>('idle');
   const [isSending, setIsSending] = useState(false);
   const [isGeneratingDocx, setIsGeneratingDocx] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -196,6 +201,7 @@ export default function ChatPage() {
     setAssistantDraft('');
     setError(null);
     setIsSending(true);
+    setStreamPhase('thinking');
 
     let assistantContent = '';
     let hasTokenEvent = false;
@@ -254,6 +260,7 @@ export default function ChatPage() {
             const delta = event.content ?? '';
             if (!delta) continue;
             hasTokenEvent = true;
+            setStreamPhase('typing');
             assistantContent += delta;
             setAssistantDraft(assistantContent);
             continue;
@@ -262,6 +269,7 @@ export default function ChatPage() {
           if (event.type === 'agent_delta' && !hasTokenEvent) {
             const delta = event.content ?? '';
             if (!delta) continue;
+            setStreamPhase('typing');
             assistantContent += delta;
             setAssistantDraft(assistantContent);
           }
@@ -284,6 +292,7 @@ export default function ChatPage() {
     } catch (err) {
       setError(normalizeError(err));
     } finally {
+      setStreamPhase('idle');
       setIsSending(false);
     }
   };
@@ -404,10 +413,10 @@ export default function ChatPage() {
 
       <section className='grid min-h-[calc(100vh-12rem)] gap-4 xl:grid-cols-[300px_1fr_1fr]'>
         <aside
-          className='rounded-2xl border p-4 backdrop-blur'
+          className='rounded-2xl border p-4 shadow-lg backdrop-blur'
           style={{
             borderColor: `${colors.secondaryColor.color}55`,
-            backgroundColor: `${colors.secondaryColor.color}20`,
+            backgroundColor: `${colors.secondaryColor.color}16`,
           }}
         >
           <button
@@ -455,17 +464,28 @@ export default function ChatPage() {
         </aside>
 
         <div
-          className='flex min-h-0 flex-col rounded-2xl border shadow-sm'
+          className='flex min-h-0 flex-col rounded-2xl border shadow-xl'
           style={{
             borderColor: `${colors.secondaryColor.color}55`,
-            backgroundColor: `${colors.backgroundColor.color}A6`,
+            backgroundColor: `${colors.backgroundColor.color}CC`,
           }}
         >
           <header
             className='flex items-center justify-between border-b px-5 py-3'
             style={{ borderColor: `${colors.secondaryColor.color}55` }}
           >
-            <h1 className='text-lg font-semibold'>{activeConversation?.title ?? 'Workspace'}</h1>
+            <div>
+              <h1 className='text-lg font-semibold'>
+                {activeConversation?.title ?? 'Workspace'}
+              </h1>
+              {isSending && (
+                <p className='mt-1 text-xs opacity-80'>
+                  {streamPhase === 'thinking'
+                    ? 'Assistant is thinking…'
+                    : 'Assistant is typing in real time…'}
+                </p>
+              )}
+            </div>
             <button
               type='button'
               className='rounded-xl border px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60'
@@ -481,7 +501,7 @@ export default function ChatPage() {
             {messages.map((message) => (
               <article
                 key={message.id ?? `${message.role}-${message.content.slice(0, 16)}`}
-                className='max-w-[86%] rounded-2xl border px-4 py-3 text-sm leading-relaxed'
+                className='max-w-[86%] rounded-2xl border px-4 py-3 text-sm leading-relaxed shadow-sm'
                 style={{
                   marginLeft: message.role === 'user' ? 'auto' : 0,
                   borderColor:
@@ -500,13 +520,29 @@ export default function ChatPage() {
 
             {assistantDraft && (
               <article
-                className='max-w-[86%] rounded-2xl border px-4 py-3 text-sm leading-relaxed'
+                className='max-w-[86%] rounded-2xl border px-4 py-3 text-sm leading-relaxed shadow-md'
                 style={{
                   borderColor: `${colors.accentColor.color}80`,
-                  backgroundColor: `${colors.accentColor.color}14`,
+                  backgroundColor: `${colors.accentColor.color}1C`,
                 }}
               >
                 {assistantDraft}
+                <span className='stream-cursor' aria-hidden='true' />
+              </article>
+            )}
+
+            {isSending && !assistantDraft && (
+              <article
+                className='max-w-[86%] rounded-2xl border px-4 py-3 text-sm shadow-sm'
+                style={{
+                  borderColor: `${colors.accentColor.color}80`,
+                  backgroundColor: `${colors.accentColor.color}10`,
+                }}
+              >
+                <span className='inline-flex items-center gap-2'>
+                  <span className='h-2 w-2 animate-pulse rounded-full bg-current opacity-60' />
+                  {streamPhase === 'thinking' ? 'Thinking…' : 'Typing…'}
+                </span>
               </article>
             )}
           </div>
@@ -550,7 +586,7 @@ export default function ChatPage() {
         </div>
 
         <aside
-          className='flex min-h-0 flex-col rounded-2xl border'
+          className='flex min-h-0 flex-col rounded-2xl border shadow-lg'
           style={{
             borderColor: `${colors.secondaryColor.color}55`,
             backgroundColor: `${colors.backgroundColor.color}C2`,

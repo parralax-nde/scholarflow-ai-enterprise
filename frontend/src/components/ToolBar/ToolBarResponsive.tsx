@@ -17,7 +17,10 @@ const ToolBarResponsive: React.FC<IToolBarResponsiveProps> = ({
   return (
     <>
       {toolBarOpened && (
-        <div className='fixed bottom-[4.35rem] left-0 flex w-full flex-col gap-2 bg-[#737374] p-2'>
+        <div
+          className='fixed bottom-[4.35rem] left-0 flex w-full flex-col gap-2 bg-[#737374] p-2'
+          data-toolbar-hotkeys='enabled'
+        >
           <ColorsBar />
           <DarkModeToggle />
           <RandomColorsButton />

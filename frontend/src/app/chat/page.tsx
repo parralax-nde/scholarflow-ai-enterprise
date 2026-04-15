@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAppSelector } from 'store/store-hooks';
 
 import RealtimePageFrame from '@/components/realtime/RealtimePageFrame';
@@ -37,7 +37,19 @@ export default function ChatPage() {
     [conversations, activeConversationId]
   );
 
-  const loadConversations = async () => {
+  const createConversation = useCallback(async () => {
+    const response = await fetch(`${API_BASE_URL}/ai/conversations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'New chat' }),
+    });
+    if (!response.ok) {
+      throw new Error('Unable to create conversation');
+    }
+    return (await response.json()) as Conversation;
+  }, []);
+
+  const loadConversations = useCallback(async () => {
     const response = await fetch(`${API_BASE_URL}/ai/conversations`);
     if (!response.ok) {
       throw new Error('Unable to load conversations');
@@ -53,28 +65,16 @@ export default function ChatPage() {
 
     setConversations(payload);
     setActiveConversationId((prev) => prev ?? payload[0].id);
-  };
+  }, [createConversation]);
 
-  const loadMessages = async (conversationId: string) => {
+  const loadMessages = useCallback(async (conversationId: string) => {
     const response = await fetch(`${API_BASE_URL}/ai/conversations/${conversationId}/messages`);
     if (!response.ok) {
       throw new Error('Unable to load messages');
     }
     const payload = (await response.json()) as { messages: Message[] };
     setMessages(payload.messages ?? []);
-  };
-
-  const createConversation = async () => {
-    const response = await fetch(`${API_BASE_URL}/ai/conversations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'New chat' }),
-    });
-    if (!response.ok) {
-      throw new Error('Unable to create conversation');
-    }
-    return (await response.json()) as Conversation;
-  };
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -84,7 +84,7 @@ export default function ChatPage() {
         setError((err as Error).message);
       }
     })();
-  }, []);
+  }, [loadConversations]);
 
   useEffect(() => {
     if (!activeConversationId) return;
@@ -95,7 +95,7 @@ export default function ChatPage() {
         setError((err as Error).message);
       }
     })();
-  }, [activeConversationId]);
+  }, [activeConversationId, loadMessages]);
 
   const handleNewConversation = async () => {
     try {
@@ -146,9 +146,13 @@ export default function ChatPage() {
       const decoder = new TextDecoder();
       let buffer = '';
 
-      while (true) {
+      let streamEnded = false;
+      while (!streamEnded) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          streamEnded = true;
+          continue;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');

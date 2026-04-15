@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import gettempdir
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -791,6 +791,70 @@ async def _generate_chatdev_like_responses(context_messages: list[dict[str, str]
     return results
 
 
+def _coerce_llm_chunk_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                chunks.append(item)
+                continue
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+        return "".join(chunks)
+    return ""
+
+
+def _to_langchain_messages(context_messages: list[dict[str, str]]) -> list[Any]:
+    try:
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    except Exception as exc:  # pragma: no cover - runtime dependency check
+        raise HTTPException(status_code=500, detail=f"langchain dependency unavailable: {exc}") from exc
+
+    mapped_messages: list[Any] = []
+    for message in context_messages:
+        role = str(message.get("role") or "user")
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "system":
+            mapped_messages.append(SystemMessage(content=content))
+        elif role == "assistant":
+            mapped_messages.append(AIMessage(content=content))
+        else:
+            mapped_messages.append(HumanMessage(content=content))
+    return mapped_messages
+
+
+async def _stream_chat_with_langchain(context_messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    try:
+        from langchain_ollama import ChatOllama
+    except Exception as exc:  # pragma: no cover - runtime dependency check
+        raise HTTPException(status_code=500, detail=f"langchain ollama dependency unavailable: {exc}") from exc
+
+    messages = _to_langchain_messages(context_messages)
+    if not messages:
+        raise HTTPException(status_code=400, detail="at least one non-empty message is required")
+
+    llm = ChatOllama(
+        model=OLLAMA_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        keep_alive=_normalized_keep_alive(),
+        temperature=0,
+    )
+
+    async for chunk in llm.astream(messages):
+        if isinstance(chunk, str):
+            text = chunk
+        else:
+            text = _coerce_llm_chunk_text(getattr(chunk, "content", ""))
+        if text:
+            yield text
+
+
 def _superdoc_mcp_rpc(method: str, params: dict[str, Any], *, include_session: bool = True) -> dict[str, Any]:
     global superdoc_mcp_session_id
 
@@ -1116,5 +1180,4 @@ def _merge_crdt_operation(doc_id: str, operation: CrdtOperation) -> dict[str, An
     state["text"] = merged_text
     state["cursor"] = cursor_map
     return {"doc_id": doc_id, "clock": state["clock"], "text": state["text"], "cursor": state["cursor"]}
-
 

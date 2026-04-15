@@ -136,39 +136,40 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
     context_messages = body.messages[-MAX_CONTEXT_MESSAGES:] if len(body.messages) > MAX_CONTEXT_MESSAGES else body.messages
 
     async def stream_generator():
-        yield json.dumps({"type": "meta", "model": OLLAMA_MODEL, "phase": "requesting", "orchestrator": "chatdev-like"}) + "\n"
+        yield json.dumps(
+            {
+                "type": "meta",
+                "model": OLLAMA_MODEL,
+                "phase": "requesting",
+                "orchestrator": "langchain",
+                "conversation_id": conversation_id,
+            }
+        ) + "\n"
         try:
             yield json.dumps(
                 {
                     "type": "meta",
                     "model": OLLAMA_MODEL,
                     "phase": "streaming",
-                    "orchestrator": "chatdev-like",
-                    "agents": len(CHAT_AGENT_PROFILES),
+                    "orchestrator": "langchain",
+                    "agents": 1,
+                    "mode": "token-level",
                 }
             ) + "\n"
             crew_context = [message.model_dump() for message in context_messages]
-            agent_buffers: dict[str, str] = {}
-            async for item in _stream_chat_with_crewai(crew_context):
-                agent_name = str(item.get("agent") or "Agent")
-                event = str(item.get("event") or "")
-                content = str(item.get("content") or "")
+            assistant_content_parts: list[str] = []
 
-                if event == "start":
-                    yield json.dumps({"type": "agent_start", "agent": agent_name}) + "\n"
-                    continue
+            yield json.dumps({"type": "agent_start", "agent": "Assistant"}) + "\n"
+            async for token in _stream_chat_with_langchain(crew_context):
+                assistant_content_parts.append(token)
+                yield json.dumps({"type": "token", "content": token}) + "\n"
+                # Backward-compatible event for older consumers.
+                yield json.dumps({"type": "agent_delta", "agent": "Assistant", "content": token}) + "\n"
 
-                if event == "delta" and content:
-                    agent_buffers[agent_name] = f"{agent_buffers.get(agent_name, '')}{content}"
-                    yield json.dumps({"type": "agent_delta", "agent": agent_name, "content": content}) + "\n"
-                    continue
-
-                if event == "done":
-                    final_content = content.strip() or agent_buffers.get(agent_name, "").strip()
-                    if not final_content:
-                        continue
-                    yield json.dumps({"type": "agent_result", "agent": agent_name, "content": final_content}) + "\n"
-                    _add_message(conversation_id, "assistant", f"[Agent:{agent_name}]\n{final_content}")
+            final_content = "".join(assistant_content_parts).strip()
+            if final_content:
+                _add_message(conversation_id, "assistant", final_content)
+                yield json.dumps({"type": "agent_result", "agent": "Assistant", "content": final_content}) + "\n"
             yield json.dumps({"type": "done"}) + "\n"
         except HTTPException as e:
             yield json.dumps({"type": "error", "error": str(e.detail)}) + "\n"

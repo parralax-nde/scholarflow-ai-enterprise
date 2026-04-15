@@ -4,6 +4,9 @@ _transform: true
 services:
   - name: scholarflow-api
     url: http://backend:8000
+    connect_timeout: 30000
+    read_timeout: 360000
+    write_timeout: 360000
     routes:
       - name: api-route
         paths:

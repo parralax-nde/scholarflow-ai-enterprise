@@ -2,6 +2,9 @@
 __pycache__/
 .pytest_cache/
 .venv/
+backend/app/chat_history.db
+.scholarflow/
+**/.scholarflow/
 
 # Node
 node_modules/

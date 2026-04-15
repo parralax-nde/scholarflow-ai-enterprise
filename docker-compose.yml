@@ -8,7 +8,7 @@ services:
       SERVICE_NAME: core
       SERVICE_METADATA_TAGS: core,auth,plagiarism,citation,collaboration,billing,admin
       OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_MODEL: gemma4:e2b
+      OLLAMA_MODEL: jaahas/qwen3.5-uncensored:2b-q6_K
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
       SUPERDOC_MCP_URL: http://superdoc-mcp:8090/mcp
       DOCX_ARTIFACT_DIR: /shared/docx
@@ -143,7 +143,7 @@ services:
     container_name: scholarflow-ollama
     environment:
       OLLAMA_HOST: http://0.0.0.0:11434
-      OLLAMA_MODEL: gemma4:e2b
+      OLLAMA_MODEL: jaahas/qwen3.5-uncensored:2b-q6_K
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
       OLLAMA_KEEP_WARM_INTERVAL: ${OLLAMA_KEEP_WARM_INTERVAL:-90}
     entrypoint: ["/bin/sh", "/opt/ollama-start.sh"]

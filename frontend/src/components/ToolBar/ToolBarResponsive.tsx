@@ -3,6 +3,7 @@ import React from 'react';
 import ColorsBar from '@/components/ColorPicker/ColorsBar';
 import DarkModeToggle from '@/components/ToolBar/Partials/DarkModeToggle';
 import ExportColorsButton from '@/components/ToolBar/Partials/ExportColorsButton';
+import PaletteManager from '@/components/ToolBar/Partials/PaletteManager';
 import RandomColorsButton from '@/components/ToolBar/Partials/RandomColorsButton';
 import ShareUrl from '@/components/ToolBar/Partials/ShareUrl';
 
@@ -16,10 +17,14 @@ const ToolBarResponsive: React.FC<IToolBarResponsiveProps> = ({
   return (
     <>
       {toolBarOpened && (
-        <div className='fixed bottom-[4.35rem] left-0 flex w-full flex-col gap-2 bg-[#737374] p-2'>
+        <div
+          className='fixed bottom-[4.35rem] left-0 flex w-full flex-col gap-2 bg-[#737374] p-2'
+          data-toolbar-hotkeys='enabled'
+        >
           <ColorsBar />
           <DarkModeToggle />
           <RandomColorsButton />
+          <PaletteManager />
           <ExportColorsButton />
           <ShareUrl />
         </div>

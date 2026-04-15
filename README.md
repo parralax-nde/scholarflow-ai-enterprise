@@ -46,7 +46,7 @@ Primary endpoints:
 
 5. **AI Generation Service**
    - Streaming chat endpoint (`/ai/chat/stream`) backed by Ollama
-   - Default model configured as `gemma4:e2b` via `OLLAMA_MODEL`
+   - Default model configured as `jaahas/qwen3.5-uncensored:2b-q6_K` via `OLLAMA_MODEL`
    - `gemma4:e4b` can be used if your Docker workspace has sufficient free disk
 
 6. **Citation Manager**
@@ -81,7 +81,7 @@ Optional AI settings for local backend:
 
 ```bash
 export OLLAMA_BASE_URL=http://localhost:11434
-export OLLAMA_MODEL=gemma4:e2b
+export OLLAMA_MODEL=jaahas/qwen3.5-uncensored:2b-q6_K
 export OLLAMA_KEEP_ALIVE=-1
 ```
 

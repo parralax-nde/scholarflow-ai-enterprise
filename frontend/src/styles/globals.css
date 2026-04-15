@@ -39,3 +39,22 @@ body {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
+
+@keyframes stream-cursor-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.stream-cursor {
+  display: inline-block;
+  width: 0.6ch;
+  margin-left: 2px;
+  border-right: 2px solid currentColor;
+  animation: stream-cursor-blink 1s steps(1, end) infinite;
+}

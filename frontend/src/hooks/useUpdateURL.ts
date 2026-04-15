@@ -1,22 +1,31 @@
-import { useRouter } from 'next/navigation';
+import { useEffect } from 'react';
 import { useAppSelector } from 'store/store-hooks';
 
 const useUpdateURL = () => {
-  const router = useRouter();
   const colors = useAppSelector((state) => state.global.colors);
-  const selectedColors = Object.keys(colors).filter(
-    (color) => colors[color as keyof typeof colors]
-  );
-  const queryParams = selectedColors
-    .map((color) => {
-      const colorValue = colors[color as keyof typeof colors].color;
-      return `${encodeURIComponent(colorValue as string)}`;
-    })
-    .join('-');
 
-  if (typeof window !== 'undefined') {
-    router.push(`/?colors=${queryParams.replaceAll('%23', '')}`);
-  }
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const values = [
+      colors.textColor.color,
+      colors.backgroundColor.color,
+      colors.primaryColor.color,
+      colors.secondaryColor.color,
+      colors.accentColor.color,
+    ];
+
+    if (values.some((value) => typeof value !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(value))) {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    const queryValue = (values as string[])
+      .map((value) => value.replace('#', ''))
+      .join('-');
+    url.searchParams.set('colors', queryValue);
+    window.history.replaceState({}, '', url.toString());
+  }, [colors]);
 };
 
 export default useUpdateURL;

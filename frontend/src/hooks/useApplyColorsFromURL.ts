@@ -1,39 +1,41 @@
-/* eslint-disable react-hooks/exhaustive-deps */
 import { useEffect } from 'react';
 import { setColors } from 'state/globalSlice';
 import { useAppDispatch } from 'store/store-hooks';
 
+const COLOR_KEYS = [
+  'textColor',
+  'backgroundColor',
+  'primaryColor',
+  'secondaryColor',
+  'accentColor',
+] as const;
+
+const isHex = (value: string) => /^[0-9a-fA-F]{6}$/.test(value);
+
 const useApplyColorsFromURL = () => {
   const dispatch = useAppDispatch();
 
-  let colorsQuery: string | undefined;
-  if (typeof window !== 'undefined') {
-    colorsQuery = window?.location?.search;
-  }
-
   useEffect(() => {
-    const colorsArray = colorsQuery ? colorsQuery.split('-') : [];
+    if (typeof window === 'undefined') return;
 
-    const colorsIndexes = [
-      'textColor',
-      'backgroundColor',
-      'primaryColor',
-      'secondaryColor',
-      'accentColor',
-    ];
+    const query = new URLSearchParams(window.location.search).get('colors');
+    if (!query) return;
 
-    const colorsObject = colorsArray.reduce((acc, color, index) => {
-      acc[colorsIndexes[index]] = {
-        color: `#${color.replaceAll('%23', '')}`,
+    const values = query.split('-');
+    if (values.length !== COLOR_KEYS.length || values.some((value) => !isHex(value))) {
+      return;
+    }
+
+    const parsedColors = COLOR_KEYS.reduce((acc, key, index) => {
+      acc[key] = {
+        color: `#${values[index]}`,
         isLocked: false,
       };
       return acc;
-    }, {} as Record<string, { color: string; isLocked: boolean }>);
+    }, {} as Record<(typeof COLOR_KEYS)[number], { color: string; isLocked: boolean }>);
 
-    if (Object.keys(colorsObject).length) {
-      dispatch(setColors(colorsObject));
-    }
-  }, []);
+    dispatch(setColors(parsedColors));
+  }, [dispatch]);
 };
 
 export default useApplyColorsFromURL;

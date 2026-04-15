@@ -2,7 +2,7 @@
 set -eu
 
 export OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
-MODEL="${OLLAMA_MODEL:-gemma4:e2b}"
+MODEL="${OLLAMA_MODEL:-jaahas/qwen3.5-uncensored:2b-q6_K}"
 KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:--1}"
 KEEP_WARM_INTERVAL="${OLLAMA_KEEP_WARM_INTERVAL:-90}"
 READY_FILE="/tmp/ollama-ready"

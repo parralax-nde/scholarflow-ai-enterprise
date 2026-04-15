@@ -1,6 +1,6 @@
 export const siteConfig = {
-  title: 'Realtime Colors Clone',
+  title: 'SimpleScholar',
   description:
-    'Realtime colors clone with Next.js, Tailwind CSS, and TypeScript',
+    'SimpleScholar is an AI research and writing copilot with chat, DOCX drafting, and review workflows.',
   url: 'https://tsnext-tw.thcl.dev',
 };

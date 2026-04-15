@@ -31,11 +31,15 @@ const ColorButton: React.FC<IColorButtonProps> = ({ item }): JSX.Element => {
       className='relative flex flex-col items-center justify-center'
       onMouseEnter={() => setButtonHover(true)}
       onMouseLeave={() => setButtonHover(false)}
+      onClick={(event) => event.stopPropagation()}
     >
       {colorPickers[
         `${label.toLowerCase()}Color` as keyof typeof colorPickers
       ] && (
-        <div className='absolute bottom-16 bg-black bg-opacity-50'>
+        <div
+          className='absolute bottom-16 bg-black bg-opacity-50'
+          onClick={(event) => event.stopPropagation()}
+        >
           {colorPickerComponent}
         </div>
       )}

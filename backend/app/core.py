@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 import time
 import uuid
 import asyncio
@@ -18,7 +19,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import gettempdir
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -32,14 +33,23 @@ JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 JWT_ALGORITHM = "HS256"
 ACCESS_TTL_SECONDS = 3600
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "jaahas/qwen3.5-uncensored:2b-q6_K")
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "-1")
 SUPERDOC_MCP_URL = os.getenv("SUPERDOC_MCP_URL", "http://localhost:8090/mcp")
 MAX_CONTEXT_MESSAGES = int(os.getenv("MAX_CONTEXT_MESSAGES", "12"))
+FREE_PAGE_ALLOWANCE = int(os.getenv("FREE_PAGE_ALLOWANCE", "100"))
+PAGE_PRICE_USD = float(os.getenv("PAGE_PRICE_USD", "0.1"))
+DEFAULT_ADMIN_EMAIL = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@gmail.com").strip().lower()
+DEFAULT_ADMIN_PASSWORD = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin2026")
 CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path(gettempdir()) / "scholarflow" / "chat_history.db")))
+PALETTE_DB_PATH = Path(
+    os.getenv("PALETTE_DB_PATH", str(Path(gettempdir()) / "scholarflow" / "color_palettes.json"))
+)
 DOCX_ARTIFACT_DIR = Path(os.getenv("DOCX_ARTIFACT_DIR", str(Path(gettempdir()) / "scholarflow" / "docx_artifacts")))
 DEFAULT_CONVERSATION_TITLE = "New chat"
 MAX_CONVERSATION_TITLE_LENGTH = 60
+MAX_DOCX_FILENAME_STEM_LENGTH = 200
+MAX_DOCX_TRANSCRIPT_LINES = 20
 
 users_by_google_sub: dict[str, dict[str, Any]] = {}
 users_by_email: dict[str, dict[str, Any]] = {}
@@ -55,10 +65,95 @@ doc_crdt_state: dict[str, dict[str, Any]] = defaultdict(
     lambda: {"clock": 0, "text": "", "cursor": {}, "operations": [], "applied_operation_ids": set()}
 )
 chat_db_initialized = False
+palette_db_initialized = False
+palette_db_lock = threading.Lock()
 DOCX_ARTIFACT_TTL_SECONDS = 1800
 docx_artifacts: dict[str, dict[str, Any]] = {}
 superdoc_mcp_session_id: str | None = None
 superdoc_tool_name_cache: dict[str, str] = {}
+DOCX_TEMPLATE_REGISTRY: dict[str, dict[str, Any]] = {
+    "research_brief": {
+        "id": "research_brief",
+        "name": "Research Brief",
+        "description": "Executive research summary with findings and recommendations.",
+        "fields": ["title", "author.name", "abstract", "body", "outline"],
+        "template_xml": (
+            "<doc>\n"
+            "  <h1>{{title}}</h1>\n"
+            "  <p><strong>Author:</strong> {{author.name}}</p>\n"
+            "  <h2>Executive Summary</h2>\n"
+            "  <p>{{abstract}}</p>\n"
+            "  <h2>Detailed Findings</h2>\n"
+            "  <p>{{body}}</p>\n"
+            "  <h2>Proposed Outline</h2>\n"
+            "  <p>{{outline}}</p>\n"
+            "</doc>"
+        ),
+        "default_json_data": {
+            "title": "Research Brief",
+            "author": {"name": "SimpleScholar AI"},
+            "abstract": "",
+            "body": "",
+            "outline": "",
+        },
+    },
+    "academic_report": {
+        "id": "academic_report",
+        "name": "Academic Report",
+        "description": "Structured report with methodology and conclusion sections.",
+        "fields": ["title", "author.name", "abstract", "methodology", "body", "conclusion"],
+        "template_xml": (
+            "<doc>\n"
+            "  <h1>{{title}}</h1>\n"
+            "  <p><strong>Author:</strong> {{author.name}}</p>\n"
+            "  <h2>Abstract</h2>\n"
+            "  <p>{{abstract}}</p>\n"
+            "  <h2>Methodology</h2>\n"
+            "  <p>{{methodology}}</p>\n"
+            "  <h2>Discussion</h2>\n"
+            "  <p>{{body}}</p>\n"
+            "  <h2>Conclusion</h2>\n"
+            "  <p>{{conclusion}}</p>\n"
+            "</doc>"
+        ),
+        "default_json_data": {
+            "title": "Academic Report",
+            "author": {"name": "SimpleScholar AI"},
+            "abstract": "",
+            "methodology": "",
+            "body": "",
+            "conclusion": "",
+        },
+    },
+    "proposal": {
+        "id": "proposal",
+        "name": "Project Proposal",
+        "description": "Proposal with objectives, scope, and timeline.",
+        "fields": ["title", "author.name", "problem", "objectives", "scope", "timeline"],
+        "template_xml": (
+            "<doc>\n"
+            "  <h1>{{title}}</h1>\n"
+            "  <p><strong>Author:</strong> {{author.name}}</p>\n"
+            "  <h2>Problem Statement</h2>\n"
+            "  <p>{{problem}}</p>\n"
+            "  <h2>Objectives</h2>\n"
+            "  <p>{{objectives}}</p>\n"
+            "  <h2>Scope</h2>\n"
+            "  <p>{{scope}}</p>\n"
+            "  <h2>Timeline</h2>\n"
+            "  <p>{{timeline}}</p>\n"
+            "</doc>"
+        ),
+        "default_json_data": {
+            "title": "Project Proposal",
+            "author": {"name": "SimpleScholar AI"},
+            "problem": "",
+            "objectives": "",
+            "scope": "",
+            "timeline": "",
+        },
+    },
+}
 CHAT_AGENT_PROFILES: list[dict[str, str]] = [
     {
         "name": "Analyst",
@@ -91,6 +186,68 @@ def _utc_now_iso() -> str:
 def _connect_chat_db() -> sqlite3.Connection:
     _init_chat_db()
     return sqlite3.connect(CHAT_DB_PATH)
+
+
+def _init_palette_db() -> None:
+    global palette_db_initialized
+    if palette_db_initialized:
+        return
+    PALETTE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not PALETTE_DB_PATH.exists():
+        PALETTE_DB_PATH.write_text("[]", encoding="utf-8")
+    palette_db_initialized = True
+
+
+def _read_palette_docs() -> list[dict[str, Any]]:
+    _init_palette_db()
+    try:
+        payload = json.loads(PALETTE_DB_PATH.read_text(encoding="utf-8") or "[]")
+    except json.JSONDecodeError:
+        payload = []
+    if not isinstance(payload, list):
+        return []
+    return [entry for entry in payload if isinstance(entry, dict)]
+
+
+def _write_palette_docs(items: list[dict[str, Any]]) -> None:
+    _init_palette_db()
+    safe_items = [entry for entry in items if isinstance(entry, dict)]
+    temp_path = PALETTE_DB_PATH.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(safe_items, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(PALETTE_DB_PATH)
+
+
+def _list_color_palettes() -> list[dict[str, Any]]:
+    with palette_db_lock:
+        docs = _read_palette_docs()
+    docs.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+    return docs
+
+
+def _create_color_palette(name: str, colors: dict[str, Any]) -> dict[str, Any]:
+    with palette_db_lock:
+        docs = _read_palette_docs()
+        now = _utc_now_iso()
+        entry = {
+            "id": str(uuid.uuid4()),
+            "name": name.strip(),
+            "colors": colors,
+            "created_at": now,
+            "updated_at": now,
+        }
+        docs.append(entry)
+        _write_palette_docs(docs)
+    return entry
+
+
+def _delete_color_palette(palette_id: str) -> bool:
+    with palette_db_lock:
+        docs = _read_palette_docs()
+        filtered = [entry for entry in docs if str(entry.get("id")) != palette_id]
+        if len(filtered) == len(docs):
+            return False
+        _write_palette_docs(filtered)
+        return True
 
 
 def _init_chat_db() -> None:
@@ -250,11 +407,12 @@ async def _warm_ollama_model() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     register_self()
+    _ensure_default_admin_user()
     asyncio.create_task(_warm_ollama_model())
     yield
 
 
-app = FastAPI(title="ScholarFlow AI Enterprise", lifespan=lifespan)
+app = FastAPI(title="SimpleScholar API", lifespan=lifespan)
 
 
 class RegisterServiceRequest(BaseModel):
@@ -298,6 +456,24 @@ class ChatStreamRequest(BaseModel):
 
 class ConversationCreateRequest(BaseModel):
     title: str | None = Field(default=None, max_length=MAX_CONVERSATION_TITLE_LENGTH)
+
+
+class PaletteColorEntry(BaseModel):
+    color: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
+    isLocked: bool = False
+
+
+class PaletteColorsPayload(BaseModel):
+    textColor: PaletteColorEntry
+    backgroundColor: PaletteColorEntry
+    primaryColor: PaletteColorEntry
+    secondaryColor: PaletteColorEntry
+    accentColor: PaletteColorEntry
+
+
+class ColorPaletteCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    colors: PaletteColorsPayload
 
 
 class SimilarityRequest(BaseModel):
@@ -365,6 +541,32 @@ class DocxToolGenerateResponse(BaseModel):
     filename: str
     model: str
     source: str
+
+
+class DocxTemplateSummary(BaseModel):
+    id: str
+    name: str
+    description: str
+    fields: list[str]
+
+
+class DocxTemplateListResponse(BaseModel):
+    templates: list[DocxTemplateSummary]
+
+
+class DocxTemplateResolveResponse(BaseModel):
+    template_id: str
+    template_xml: str
+    default_json_data: dict[str, Any]
+    fields: list[str]
+
+
+class DocxJsonStreamRequest(BaseModel):
+    template_id: str = Field(default="research_brief", min_length=1)
+    conversation_id: str | None = None
+    prompt: str | None = None
+    messages: list[ChatMessage] = Field(default_factory=list)
+    current_json_data: dict[str, Any] | None = None
 
 
 class SuperdocOpenRequest(BaseModel):
@@ -791,6 +993,70 @@ async def _generate_chatdev_like_responses(context_messages: list[dict[str, str]
     return results
 
 
+def _coerce_llm_chunk_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                chunks.append(item)
+                continue
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+        return "".join(chunks)
+    return ""
+
+
+def _to_langchain_messages(context_messages: list[dict[str, str]]) -> list[Any]:
+    try:
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    except Exception as exc:  # pragma: no cover - runtime dependency check
+        raise HTTPException(status_code=500, detail=f"langchain dependency unavailable: {exc}") from exc
+
+    mapped_messages: list[Any] = []
+    for message in context_messages:
+        role = str(message.get("role") or "user")
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "system":
+            mapped_messages.append(SystemMessage(content=content))
+        elif role == "assistant":
+            mapped_messages.append(AIMessage(content=content))
+        else:
+            mapped_messages.append(HumanMessage(content=content))
+    return mapped_messages
+
+
+async def _stream_chat_with_langchain(context_messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    try:
+        from langchain_ollama import ChatOllama
+    except Exception as exc:  # pragma: no cover - runtime dependency check
+        raise HTTPException(status_code=500, detail=f"langchain ollama dependency unavailable: {exc}") from exc
+
+    messages = _to_langchain_messages(context_messages)
+    if not messages:
+        raise HTTPException(status_code=400, detail="at least one non-empty message is required")
+
+    llm = ChatOllama(
+        model=OLLAMA_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        keep_alive=_normalized_keep_alive(),
+        temperature=0,
+    )
+
+    async for chunk in llm.astream(messages):
+        if isinstance(chunk, str):
+            text = chunk
+        else:
+            text = _coerce_llm_chunk_text(getattr(chunk, "content", ""))
+        if text:
+            yield text
+
+
 def _superdoc_mcp_rpc(method: str, params: dict[str, Any], *, include_session: bool = True) -> dict[str, Any]:
     global superdoc_mcp_session_id
 
@@ -845,7 +1111,7 @@ def _ensure_superdoc_mcp_initialized() -> None:
         {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "scholarflow-backend", "version": "0.1.0"},
+            "clientInfo": {"name": "simplescholar-backend", "version": "0.1.0"},
         },
         include_session=False,
     )
@@ -921,7 +1187,7 @@ def _default_docx_draft(seed_text: str) -> tuple[str, dict[str, Any], str]:
         title = _truncate_title(clean_seed)
     json_data = {
         "title": title,
-        "author": {"name": "ScholarFlow AI"},
+        "author": {"name": "SimpleScholar AI"},
         "abstract": clean_seed or "Initial auto-generated draft from the latest conversation.",
         "body": clean_seed or "Add findings, evidence, and next steps from the conversation.",
     }
@@ -935,15 +1201,103 @@ def _default_docx_draft(seed_text: str) -> tuple[str, dict[str, Any], str]:
         "  <p>{{body}}</p>\n"
         "</doc>"
     )
-    filename = f"{re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-') or 'scholarflow-draft'}.docx"
+    filename = _sanitize_docx_filename(title)
     return template_xml, json_data, filename
+
+
+def _sanitize_docx_filename(raw_value: str) -> str:
+    raw_value = raw_value.replace("/", " ").replace("\\", " ")
+    safe_stem = re.sub(r"[^a-z0-9]+", "-", raw_value.lower()).strip("-")
+    safe_stem = safe_stem[:MAX_DOCX_FILENAME_STEM_LENGTH].strip("-") or "simplescholar-draft"
+    return f"{safe_stem}.docx"
+
+
+def _list_docx_templates() -> list[dict[str, Any]]:
+    templates = []
+    for template in DOCX_TEMPLATE_REGISTRY.values():
+        templates.append(
+            {
+                "id": str(template["id"]),
+                "name": str(template["name"]),
+                "description": str(template["description"]),
+                "fields": [str(field) for field in template.get("fields", [])],
+            }
+        )
+    return templates
+
+
+def _get_docx_template(template_id: str | None) -> dict[str, Any]:
+    resolved_id = (template_id or "research_brief").strip() or "research_brief"
+    template = DOCX_TEMPLATE_REGISTRY.get(resolved_id)
+    if not template:
+        available = ", ".join(DOCX_TEMPLATE_REGISTRY.keys())
+        raise HTTPException(status_code=400, detail=f"unknown template_id '{resolved_id}'. available={available}")
+    return template
+
+
+def _resolve_docx_template_payload(template_id: str | None) -> dict[str, Any]:
+    template = _get_docx_template(template_id)
+    return {
+        "template_id": str(template["id"]),
+        "template_xml": str(template["template_xml"]),
+        "default_json_data": dict(template.get("default_json_data", {})),
+        "fields": [str(field) for field in template.get("fields", [])],
+    }
+
+
+def _normalize_docx_template_json(
+    template: dict[str, Any],
+    payload: dict[str, Any] | None,
+    seed_text: str,
+) -> tuple[dict[str, Any], str]:
+    defaults = dict(template.get("default_json_data", {}))
+    merged = dict(defaults)
+    if isinstance(payload, dict):
+        merged.update({key: value for key, value in payload.items() if value is not None})
+
+    author = merged.get("author")
+    if isinstance(author, dict):
+        author_name = str(author.get("name") or "SimpleScholar AI").strip() or "SimpleScholar AI"
+        merged["author"] = {"name": author_name}
+    elif isinstance(author, str):
+        merged["author"] = {"name": author.strip() or "SimpleScholar AI"}
+    else:
+        merged["author"] = {"name": "SimpleScholar AI"}
+
+    title = str(merged.get("title") or _truncate_title(seed_text or "Draft")).strip() or "Draft"
+    merged["title"] = title
+    filename = _sanitize_docx_filename(title)
+    return merged, filename
+
+
+def _build_docx_template_json_prompt(
+    template: dict[str, Any],
+    seed_text: str,
+    source_messages: list[dict[str, str]],
+    current_json_data: dict[str, Any] | None,
+) -> str:
+    transcript_lines = [f"{item['role']}: {item['content']}" for item in source_messages if item.get("content")]
+    transcript = "\n".join(transcript_lines[-MAX_DOCX_TRANSCRIPT_LINES:])
+    fields = ", ".join([str(field) for field in template.get("fields", [])]) or "title, author.name, body"
+    default_json = json.dumps(template.get("default_json_data", {}), ensure_ascii=False)
+    existing_json = json.dumps(current_json_data or {}, ensure_ascii=False)
+    return (
+        "Return only valid JSON. No markdown, no backticks, no commentary.\n"
+        f"Target template: {template.get('name')}\n"
+        f"Required fields: {fields}\n"
+        f"Default JSON shape: {default_json}\n"
+        f"Current JSON draft: {existing_json}\n"
+        f"Seed focus: {seed_text or 'general document'}\n\n"
+        "Use professional academic language, keep sections concise, and include practical outline detail.\n\n"
+        f"Transcript:\n{transcript}"
+    )
 
 
 def _normalize_docx_plan(payload: dict[str, Any], seed_text: str) -> tuple[str, dict[str, Any], str]:
     template_xml, json_data, filename = _default_docx_draft(seed_text)
 
     title = str(payload.get("title") or json_data["title"]).strip() or json_data["title"]
-    author_name = "ScholarFlow AI"
+    author_name = "SimpleScholar AI"
     author = payload.get("author")
     if isinstance(author, dict):
         author_name = str(author.get("name") or author_name).strip() or author_name
@@ -979,9 +1333,9 @@ def _normalize_docx_plan(payload: dict[str, Any], seed_text: str) -> tuple[str, 
     }
     suggested_filename = str(payload.get("filename") or "").strip()
     if suggested_filename:
-        filename = suggested_filename
-    if not filename.lower().endswith(".docx"):
-        filename = f"{filename}.docx"
+        filename = _sanitize_docx_filename(suggested_filename.replace(".docx", ""))
+    else:
+        filename = _sanitize_docx_filename(filename.replace(".docx", ""))
     return template_xml, json_data, filename
 
 
@@ -1064,6 +1418,24 @@ def _verify_password(password: str, salt: str, expected_hash: str) -> bool:
     return hmac.compare_digest(_hash_password(password, salt), expected_hash)
 
 
+def _ensure_default_admin_user() -> None:
+    if not DEFAULT_ADMIN_EMAIL or not DEFAULT_ADMIN_PASSWORD:
+        return
+    if DEFAULT_ADMIN_EMAIL in users_by_email:
+        return
+
+    salt = secrets.token_hex(16)
+    users_by_email[DEFAULT_ADMIN_EMAIL] = {
+        "id": str(uuid.uuid4()),
+        "email": DEFAULT_ADMIN_EMAIL,
+        "name": "Admin",
+        "role": "enterprise",
+        "auth_provider": "password",
+        "password_salt": salt,
+        "password_hash": _hash_password(DEFAULT_ADMIN_PASSWORD, salt),
+    }
+
+
 def _scopes_for_role(role: str) -> list[str]:
     scopes = ["proposal:read", "proposal:write"]
     if role == "enterprise":
@@ -1116,5 +1488,3 @@ def _merge_crdt_operation(doc_id: str, operation: CrdtOperation) -> dict[str, An
     state["text"] = merged_text
     state["cursor"] = cursor_map
     return {"doc_id": doc_id, "clock": state["clock"], "text": state["text"], "cursor": state["cursor"]}
-
-

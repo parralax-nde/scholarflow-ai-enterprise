@@ -13,6 +13,7 @@ export const hslToHex = (h: number, s: number, l: number) => {
 };
 
 const hexChannelToLinear = (hexChannel: string) => {
+  // WCAG sRGB gamma expansion to linear RGB.
   const value = parseInt(hexChannel, 16) / 255;
   if (value <= 0.03928) {
     return value / 12.92;
@@ -21,6 +22,7 @@ const hexChannelToLinear = (hexChannel: string) => {
 };
 
 const luminance = (hex: string) => {
+  // WCAG relative luminance using Rec. 709 coefficients.
   const clean = hex.replace('#', '');
   const r = hexChannelToLinear(clean.slice(0, 2));
   const g = hexChannelToLinear(clean.slice(2, 4));
@@ -29,6 +31,7 @@ const luminance = (hex: string) => {
 };
 
 const contrastRatio = (colorA: string, colorB: string) => {
+  // WCAG contrast ratio formula with +0.05 luminance offset.
   const l1 = luminance(colorA);
   const l2 = luminance(colorB);
   const brightest = Math.max(l1, l2);
@@ -55,6 +58,7 @@ const passesVisibilityRules = ({
   secondaryColor: string;
   accentColor: string;
 }) => {
+  // Keep backgrounds and UI accents visibly separated; text/background uses WCAG AAA (7:1).
   const bgContrastOk =
     contrastRatio(backgroundColor, primaryColor) >= 2.2 &&
     contrastRatio(backgroundColor, secondaryColor) >= 2.0 &&

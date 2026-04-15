@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 import time
 import uuid
 import asyncio
@@ -59,6 +60,7 @@ doc_crdt_state: dict[str, dict[str, Any]] = defaultdict(
 )
 chat_db_initialized = False
 palette_db_initialized = False
+palette_db_lock = threading.Lock()
 DOCX_ARTIFACT_TTL_SECONDS = 1800
 docx_artifacts: dict[str, dict[str, Any]] = {}
 superdoc_mcp_session_id: str | None = None
@@ -127,33 +129,36 @@ def _write_palette_docs(items: list[dict[str, Any]]) -> None:
 
 
 def _list_color_palettes() -> list[dict[str, Any]]:
-    docs = _read_palette_docs()
+    with palette_db_lock:
+        docs = _read_palette_docs()
     docs.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
     return docs
 
 
 def _create_color_palette(name: str, colors: dict[str, Any]) -> dict[str, Any]:
-    docs = _read_palette_docs()
-    now = _utc_now_iso()
-    entry = {
-        "id": str(uuid.uuid4()),
-        "name": name.strip(),
-        "colors": colors,
-        "created_at": now,
-        "updated_at": now,
-    }
-    docs.append(entry)
-    _write_palette_docs(docs)
+    with palette_db_lock:
+        docs = _read_palette_docs()
+        now = _utc_now_iso()
+        entry = {
+            "id": str(uuid.uuid4()),
+            "name": name.strip(),
+            "colors": colors,
+            "created_at": now,
+            "updated_at": now,
+        }
+        docs.append(entry)
+        _write_palette_docs(docs)
     return entry
 
 
 def _delete_color_palette(palette_id: str) -> bool:
-    docs = _read_palette_docs()
-    filtered = [entry for entry in docs if str(entry.get("id")) != palette_id]
-    if len(filtered) == len(docs):
-        return False
-    _write_palette_docs(filtered)
-    return True
+    with palette_db_lock:
+        docs = _read_palette_docs()
+        filtered = [entry for entry in docs if str(entry.get("id")) != palette_id]
+        if len(filtered) == len(docs):
+            return False
+        _write_palette_docs(filtered)
+        return True
 
 
 def _init_chat_db() -> None:

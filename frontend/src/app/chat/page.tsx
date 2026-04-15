@@ -163,7 +163,16 @@ export default function ChatPage() {
           const line = rawLine.trim();
           if (!line) continue;
 
-          const event = JSON.parse(line) as { type?: string; content?: string; error?: string };
+          let event: { type?: string; content?: string; error?: string };
+          try {
+            event = JSON.parse(line) as {
+              type?: string;
+              content?: string;
+              error?: string;
+            };
+          } catch {
+            throw new Error('Malformed streaming response payload');
+          }
 
           if (event.type === 'error') {
             throw new Error(event.error || 'Streaming failed');

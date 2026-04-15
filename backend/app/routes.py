@@ -110,7 +110,7 @@ def create_color_palette(body: ColorPaletteCreateRequest) -> dict[str, Any]:
 @app.delete("/colors/palettes/{palette_id}")
 def delete_color_palette(palette_id: str) -> dict[str, Any]:
     if not _delete_color_palette(palette_id):
-        raise HTTPException(status_code=404, detail="palette not found")
+        raise HTTPException(status_code=404, detail="Palette not found")
     return {"deleted": True, "id": palette_id}
 
 

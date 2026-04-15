@@ -20,7 +20,9 @@ const useUpdateURL = () => {
     }
 
     const url = new URL(window.location.href);
-    const queryValue = values.map((value) => value.replace('#', '')).join('-');
+    const queryValue = (values as string[])
+      .map((value) => value.replace('#', ''))
+      .join('-');
     url.searchParams.set('colors', queryValue);
     window.history.replaceState({}, '', `${url.pathname}?${url.searchParams.toString()}${url.hash}`);
   }, [colors]);

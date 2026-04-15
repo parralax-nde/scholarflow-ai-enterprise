@@ -105,7 +105,7 @@ const PaletteManager: React.FC = (): JSX.Element => {
             />
             <button
               type='button'
-              className='border border-black px-2 py-1 text-xs font-semibold disabled:opacity-50'
+              className='border border-black px-2 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50'
               onClick={() => void handleSave()}
               disabled={!canSave}
             >

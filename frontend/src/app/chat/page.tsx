@@ -41,8 +41,18 @@ type StreamingEvent = {
   content?: string;
   error?: string;
   conversation_id?: string;
+  template_id?: string;
+  template_xml?: string;
+  json_data?: Record<string, unknown>;
+  filename?: string;
 };
 type StreamPhase = 'idle' | 'thinking' | 'typing';
+type DocxTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  fields: string[];
+};
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -75,7 +85,11 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const [guestMessageUsed, setGuestMessageUsed] = useState(false);
   const [docxSession, setDocxSession] = useState<DocxSession | null>(null);
-  const [docxEditContent, setDocxEditContent] = useState('');
+  const [docxTemplates, setDocxTemplates] = useState<DocxTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('research_brief');
+  const [templateXml, setTemplateXml] = useState<string>('');
+  const [templateJsonDraft, setTemplateJsonDraft] = useState<string>('');
+  const [jsonStreamDraft, setJsonStreamDraft] = useState<string>('');
   const [docxRefreshKey, setDocxRefreshKey] = useState(0);
 
   const isAuthenticated = Boolean(authUser);
@@ -157,6 +171,55 @@ export default function ChatPage() {
       }
     })();
   }, [activeConversationId, loadMessages]);
+
+  const loadDocxTemplates = useCallback(async () => {
+    const response = await fetch(toApiUrl('/ai/docx/templates'));
+    if (!response.ok) {
+      throw new Error('Unable to load DOCX templates');
+    }
+    const payload = (await response.json()) as { templates: DocxTemplate[] };
+    const templates = payload.templates ?? [];
+    setDocxTemplates(templates);
+    if (!templates.some((template) => template.id === selectedTemplateId) && templates[0]) {
+      setSelectedTemplateId(templates[0].id);
+    }
+  }, [selectedTemplateId]);
+
+  const loadTemplateDetails = useCallback(async (templateId: string) => {
+    const response = await fetch(toApiUrl(`/ai/docx/templates/${templateId}`));
+    if (!response.ok) {
+      throw new Error('Unable to load DOCX template details');
+    }
+    const payload = (await response.json()) as {
+      template_id: string;
+      template_xml: string;
+      default_json_data: Record<string, unknown>;
+    };
+    setTemplateXml(payload.template_xml);
+    setTemplateJsonDraft(JSON.stringify(payload.default_json_data, null, 2));
+    setJsonStreamDraft('');
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        await loadDocxTemplates();
+      } catch (err) {
+        setError(normalizeError(err));
+      }
+    })();
+  }, [loadDocxTemplates]);
+
+  useEffect(() => {
+    if (!selectedTemplateId) return;
+    void (async () => {
+      try {
+        await loadTemplateDetails(selectedTemplateId);
+      } catch (err) {
+        setError(normalizeError(err));
+      }
+    })();
+  }, [loadTemplateDetails, selectedTemplateId]);
 
   const handleNewConversation = async () => {
     if (!isAuthenticated) {
@@ -298,36 +361,82 @@ export default function ChatPage() {
   };
 
   const handleGenerateDocx = async () => {
-    if (!messages.length || !activeConversationId || isGeneratingDocx) return;
+    if (!messages.length || !activeConversationId || isGeneratingDocx || !selectedTemplateId) return;
     setIsGeneratingDocx(true);
     setError(null);
+    setJsonStreamDraft('');
 
     try {
-      const draftResponse = await fetch(toApiUrl('/ai/mcp/tools/docx/generate'), {
+      const streamResponse = await fetch(toApiUrl('/ai/docx/json/stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          template_id: selectedTemplateId,
           conversation_id: activeConversationId,
           messages: messages.map((message) => ({
             role: message.role,
             content: message.content,
           })),
+          current_json_data: templateJsonDraft ? JSON.parse(templateJsonDraft) : {},
         }),
       });
-      if (!draftResponse.ok) throw new Error('Unable to generate DOCX draft');
-      const draftPayload = (await draftResponse.json()) as {
-        template_xml: string;
-        json_data: Record<string, unknown>;
-        filename: string;
-      };
+      if (!streamResponse.ok || !streamResponse.body) {
+        throw new Error('Unable to stream DOCX JSON generation');
+      }
+
+      const reader = streamResponse.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let resultJson: Record<string, unknown> | null = null;
+      let resultTemplateXml = templateXml;
+      let resultFilename = 'draft.docx';
+      let streamEnded = false;
+
+      while (!streamEnded) {
+        const { done, value } = await reader.read();
+        if (done) {
+          streamEnded = true;
+          continue;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line) continue;
+          const event = JSON.parse(line) as StreamingEvent;
+
+          if (event.type === 'error') {
+            throw new Error(event.error || 'DOCX JSON stream failed');
+          }
+          if (event.type === 'json_token') {
+            const delta = event.content ?? '';
+            if (!delta) continue;
+            setJsonStreamDraft((prev) => prev + delta);
+            continue;
+          }
+          if (event.type === 'json_result') {
+            resultJson = (event.json_data ?? {}) as Record<string, unknown>;
+            resultTemplateXml = (event.template_xml as string) || resultTemplateXml;
+            resultFilename = (event.filename as string) || resultFilename;
+            setTemplateJsonDraft(JSON.stringify(resultJson, null, 2));
+            setTemplateXml(resultTemplateXml);
+          }
+        }
+      }
+
+      if (!resultJson) {
+        throw new Error('DOCX JSON generation returned no usable data');
+      }
 
       const sessionResponse = await fetch(toApiUrl('/export/docx/session'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          template_xml: draftPayload.template_xml,
-          json_data: draftPayload.json_data,
-          filename: draftPayload.filename,
+          template_xml: resultTemplateXml,
+          json_data: resultJson,
+          filename: resultFilename,
         }),
       });
       if (!sessionResponse.ok) throw new Error('Unable to initialize DOCX viewer');
@@ -367,25 +476,27 @@ export default function ChatPage() {
     );
   };
 
-  const handleAppendToDocx = async () => {
+  const handleApplyTemplateJson = async () => {
     if (!isAuthenticated) {
       setError('Login is required before editing documents.');
       return;
     }
-    if (!docxSession || !docxEditContent.trim()) return;
+    if (!templateXml || !templateJsonDraft.trim()) return;
 
     try {
-      const response = await fetch(toApiUrl('/ai/mcp/superdoc/apply'), {
+      const parsedJson = JSON.parse(templateJsonDraft) as Record<string, unknown>;
+      const response = await fetch(toApiUrl('/export/docx/session'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          docx_id: docxSession.docx_id,
-          content: docxEditContent.trim(),
-          suggest: false,
+          template_xml: templateXml,
+          json_data: parsedJson,
+          filename: typeof parsedJson.title === 'string' ? `${parsedJson.title}.docx` : 'draft.docx',
         }),
       });
-      if (!response.ok) throw new Error('Unable to apply edit to DOCX');
-      setDocxEditContent('');
+      if (!response.ok) throw new Error('Unable to apply template data');
+      const sessionPayload = (await response.json()) as DocxSession;
+      setDocxSession(sessionPayload);
       setDocxRefreshKey((prev) => prev + 1);
     } catch (err) {
       setError(normalizeError(err));
@@ -411,9 +522,9 @@ export default function ChatPage() {
         </div>
       )}
 
-      <section className='grid min-h-[calc(100vh-12rem)] gap-4 xl:grid-cols-[300px_1fr_1fr]'>
+      <section className='grid min-h-[calc(100vh-12rem)] gap-3 xl:grid-cols-[260px_minmax(0,1fr)_380px]'>
         <aside
-          className='rounded-2xl border p-4 shadow-lg backdrop-blur'
+          className='rounded-2xl border p-4 shadow-lg backdrop-blur-sm'
           style={{
             borderColor: `${colors.secondaryColor.color}55`,
             backgroundColor: `${colors.secondaryColor.color}16`,
@@ -467,7 +578,7 @@ export default function ChatPage() {
           className='flex min-h-0 flex-col rounded-2xl border shadow-xl'
           style={{
             borderColor: `${colors.secondaryColor.color}55`,
-            backgroundColor: `${colors.backgroundColor.color}CC`,
+            backgroundColor: `${colors.backgroundColor.color}EA`,
           }}
         >
           <header
@@ -493,15 +604,15 @@ export default function ChatPage() {
               onClick={() => void handleGenerateDocx()}
               disabled={isGeneratingDocx || messages.length === 0}
             >
-              {isGeneratingDocx ? 'Generating DOCX…' : 'Generate DOCX'}
+              {isGeneratingDocx ? 'Streaming JSON…' : 'Generate DOCX'}
             </button>
           </header>
 
-          <div className='flex-1 space-y-4 overflow-y-auto px-5 py-5'>
+          <div className='flex-1 space-y-5 overflow-y-auto px-6 py-6'>
             {messages.map((message) => (
               <article
                 key={message.id ?? `${message.role}-${message.content.slice(0, 16)}`}
-                className='max-w-[86%] rounded-2xl border px-4 py-3 text-sm leading-relaxed shadow-sm'
+                className='max-w-[86%] rounded-2xl border px-4 py-3 text-sm leading-7 shadow-sm'
                 style={{
                   marginLeft: message.role === 'user' ? 'auto' : 0,
                   borderColor:
@@ -520,7 +631,7 @@ export default function ChatPage() {
 
             {assistantDraft && (
               <article
-                className='max-w-[86%] rounded-2xl border px-4 py-3 text-sm leading-relaxed shadow-md'
+                className='max-w-[86%] rounded-2xl border px-4 py-3 text-sm leading-7 shadow-md'
                 style={{
                   borderColor: `${colors.accentColor.color}80`,
                   backgroundColor: `${colors.accentColor.color}1C`,
@@ -551,8 +662,8 @@ export default function ChatPage() {
 
           <div className='border-t p-4' style={{ borderColor: `${colors.secondaryColor.color}55` }}>
             <div
-              className='flex gap-2 rounded-2xl border p-2'
-              style={{ borderColor: `${colors.secondaryColor.color}50` }}
+              className='flex gap-2 rounded-2xl border p-2 shadow-inner'
+              style={{ borderColor: `${colors.secondaryColor.color}50`, backgroundColor: `${colors.backgroundColor.color}F5` }}
             >
               <input
                 className='w-full bg-transparent px-3 py-2 text-sm outline-none'
@@ -635,15 +746,39 @@ export default function ChatPage() {
           </div>
 
           <div className='border-t p-3' style={{ borderColor: `${colors.secondaryColor.color}55` }}>
-            <p className='mb-2 text-xs opacity-80'>Append notes to DOCX (login required)</p>
-            <textarea
-              value={docxEditContent}
-              onChange={(event) => setDocxEditContent(event.target.value)}
-              className='mb-2 h-20 w-full resize-none rounded-lg border bg-transparent px-2 py-1 text-xs outline-none'
+            <p className='mb-2 text-xs font-semibold opacity-85'>Template service controls</p>
+            <select
+              value={selectedTemplateId}
+              onChange={(event) => setSelectedTemplateId(event.target.value)}
+              className='mb-2 w-full rounded-lg border bg-transparent px-2 py-1.5 text-xs outline-none'
               style={{ borderColor: `${colors.secondaryColor.color}70` }}
-              placeholder='Add reviewer notes or summary...'
+            >
+              {docxTemplates.map((template) => (
+                <option key={template.id} value={template.id} className='text-black'>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+
+            <textarea
+              value={templateJsonDraft}
+              onChange={(event) => setTemplateJsonDraft(event.target.value)}
+              className='mb-2 h-28 w-full resize-none rounded-lg border bg-transparent px-2 py-1 text-xs outline-none'
+              style={{ borderColor: `${colors.secondaryColor.color}70` }}
+              placeholder='Template JSON data'
               disabled={!isAuthenticated}
             />
+
+            {jsonStreamDraft && (
+              <div
+                className='mb-2 max-h-24 overflow-y-auto rounded-lg border px-2 py-1 text-[11px]'
+                style={{ borderColor: `${colors.secondaryColor.color}70` }}
+              >
+                <p className='mb-1 font-semibold opacity-80'>Live JSON stream</p>
+                <pre className='whitespace-pre-wrap break-words'>{jsonStreamDraft}</pre>
+              </div>
+            )}
+
             <button
               type='button'
               className='w-full rounded-lg border px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60'
@@ -651,10 +786,10 @@ export default function ChatPage() {
                 borderColor: colors.primaryColor.color as string,
                 backgroundColor: `${colors.primaryColor.color}20`,
               }}
-              onClick={() => void handleAppendToDocx()}
-              disabled={!isAuthenticated || !docxSession || !docxEditContent.trim()}
+              onClick={() => void handleApplyTemplateJson()}
+              disabled={!isAuthenticated || !templateXml || !templateJsonDraft.trim()}
             >
-              Apply to DOCX
+              Apply template JSON to DOCX
             </button>
           </div>
         </aside>

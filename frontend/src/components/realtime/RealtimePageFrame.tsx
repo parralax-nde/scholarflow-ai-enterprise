@@ -92,7 +92,7 @@ export default function RealtimePageFrame({ children }: RealtimePageFrameProps) 
         </div>
       )}
 
-      <div className='mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-7xl flex-col'>
+      <div className='mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-[1700px] flex-col'>
         <header
           className='mb-8 flex flex-wrap items-center justify-between gap-4 border-b pb-4'
           style={{ borderColor: `${colors.secondaryColor.color}55` }}

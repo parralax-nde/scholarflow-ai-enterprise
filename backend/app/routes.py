@@ -203,6 +203,96 @@ async def ai_chat_stream(body: ChatStreamRequest) -> StreamingResponse:
     )
 
 
+@app.get("/ai/docx/templates", response_model=DocxTemplateListResponse)
+def ai_docx_templates() -> DocxTemplateListResponse:
+    templates = [DocxTemplateSummary(**item) for item in _list_docx_templates()]
+    return DocxTemplateListResponse(templates=templates)
+
+
+@app.get("/ai/docx/templates/{template_id}", response_model=DocxTemplateResolveResponse)
+def ai_docx_template_resolve(template_id: str) -> DocxTemplateResolveResponse:
+    payload = _resolve_docx_template_payload(template_id)
+    return DocxTemplateResolveResponse(
+        template_id=payload["template_id"],
+        template_xml=payload["template_xml"],
+        default_json_data=payload["default_json_data"],
+        fields=payload["fields"],
+    )
+
+
+@app.post("/ai/docx/json/stream")
+async def ai_docx_json_stream(body: DocxJsonStreamRequest) -> StreamingResponse:
+    source_messages: list[dict[str, str]] = []
+    if body.messages:
+        source_messages = [
+            {"role": message.role, "content": message.content}
+            for message in body.messages
+            if message.content.strip()
+        ]
+    elif body.conversation_id:
+        if not _conversation_exists(body.conversation_id):
+            raise HTTPException(status_code=404, detail="conversation not found")
+        source_messages = [
+            {"role": message["role"], "content": message["content"]}
+            for message in _list_messages(body.conversation_id)
+            if str(message.get("content", "")).strip()
+        ]
+
+    if not source_messages and not (body.prompt and body.prompt.strip()):
+        raise HTTPException(status_code=400, detail="conversation_id, messages, or prompt is required")
+
+    seed_text = (body.prompt or "").strip()
+    if not seed_text:
+        user_like_messages = [m["content"] for m in source_messages if m["role"] == "user"]
+        seed_text = user_like_messages[-1].strip() if user_like_messages else source_messages[-1]["content"]
+
+    template = _get_docx_template(body.template_id)
+    prompt = _build_docx_template_json_prompt(template, seed_text, source_messages, body.current_json_data)
+    context = [{"role": "user", "content": prompt}]
+
+    async def stream_generator():
+        yield json.dumps(
+            {
+                "type": "meta",
+                "phase": "requesting",
+                "template_id": template["id"],
+                "model": OLLAMA_MODEL,
+            }
+        ) + "\n"
+        json_parts: list[str] = []
+        try:
+            yield json.dumps({"type": "meta", "phase": "streaming"}) + "\n"
+            async for token in _stream_chat_with_langchain(context):
+                json_parts.append(token)
+                yield json.dumps({"type": "json_token", "content": token}) + "\n"
+
+            parsed = _extract_json_object("".join(json_parts))
+            normalized_json, filename = _normalize_docx_template_json(template, parsed, seed_text)
+            yield json.dumps(
+                {
+                    "type": "json_result",
+                    "template_id": template["id"],
+                    "template_xml": template["template_xml"],
+                    "json_data": normalized_json,
+                    "filename": filename,
+                }
+            ) + "\n"
+            yield json.dumps({"type": "done"}) + "\n"
+        except HTTPException as e:
+            yield json.dumps({"type": "error", "error": str(e.detail)}) + "\n"
+        except Exception as e:
+            yield json.dumps({"type": "error", "error": f"docx json generation failed: {str(e)}"}) + "\n"
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.post("/ai/mcp/tools/docx/generate", response_model=DocxToolGenerateResponse)
 async def ai_mcp_docx_generate(body: DocxToolGenerateRequest) -> DocxToolGenerateResponse:
     source_messages: list[dict[str, str]] = []

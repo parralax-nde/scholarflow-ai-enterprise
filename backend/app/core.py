@@ -69,6 +69,89 @@ DOCX_ARTIFACT_TTL_SECONDS = 1800
 docx_artifacts: dict[str, dict[str, Any]] = {}
 superdoc_mcp_session_id: str | None = None
 superdoc_tool_name_cache: dict[str, str] = {}
+DOCX_TEMPLATE_REGISTRY: dict[str, dict[str, Any]] = {
+    "research_brief": {
+        "id": "research_brief",
+        "name": "Research Brief",
+        "description": "Executive research summary with findings and recommendations.",
+        "fields": ["title", "author.name", "abstract", "body", "outline"],
+        "template_xml": (
+            "<doc>\n"
+            "  <h1>{{title}}</h1>\n"
+            "  <p><strong>Author:</strong> {{author.name}}</p>\n"
+            "  <h2>Executive Summary</h2>\n"
+            "  <p>{{abstract}}</p>\n"
+            "  <h2>Detailed Findings</h2>\n"
+            "  <p>{{body}}</p>\n"
+            "  <h2>Proposed Outline</h2>\n"
+            "  <p>{{outline}}</p>\n"
+            "</doc>"
+        ),
+        "default_json_data": {
+            "title": "Research Brief",
+            "author": {"name": "SimpleScholar AI"},
+            "abstract": "",
+            "body": "",
+            "outline": "",
+        },
+    },
+    "academic_report": {
+        "id": "academic_report",
+        "name": "Academic Report",
+        "description": "Structured report with methodology and conclusion sections.",
+        "fields": ["title", "author.name", "abstract", "methodology", "body", "conclusion"],
+        "template_xml": (
+            "<doc>\n"
+            "  <h1>{{title}}</h1>\n"
+            "  <p><strong>Author:</strong> {{author.name}}</p>\n"
+            "  <h2>Abstract</h2>\n"
+            "  <p>{{abstract}}</p>\n"
+            "  <h2>Methodology</h2>\n"
+            "  <p>{{methodology}}</p>\n"
+            "  <h2>Discussion</h2>\n"
+            "  <p>{{body}}</p>\n"
+            "  <h2>Conclusion</h2>\n"
+            "  <p>{{conclusion}}</p>\n"
+            "</doc>"
+        ),
+        "default_json_data": {
+            "title": "Academic Report",
+            "author": {"name": "SimpleScholar AI"},
+            "abstract": "",
+            "methodology": "",
+            "body": "",
+            "conclusion": "",
+        },
+    },
+    "proposal": {
+        "id": "proposal",
+        "name": "Project Proposal",
+        "description": "Proposal with objectives, scope, and timeline.",
+        "fields": ["title", "author.name", "problem", "objectives", "scope", "timeline"],
+        "template_xml": (
+            "<doc>\n"
+            "  <h1>{{title}}</h1>\n"
+            "  <p><strong>Author:</strong> {{author.name}}</p>\n"
+            "  <h2>Problem Statement</h2>\n"
+            "  <p>{{problem}}</p>\n"
+            "  <h2>Objectives</h2>\n"
+            "  <p>{{objectives}}</p>\n"
+            "  <h2>Scope</h2>\n"
+            "  <p>{{scope}}</p>\n"
+            "  <h2>Timeline</h2>\n"
+            "  <p>{{timeline}}</p>\n"
+            "</doc>"
+        ),
+        "default_json_data": {
+            "title": "Project Proposal",
+            "author": {"name": "SimpleScholar AI"},
+            "problem": "",
+            "objectives": "",
+            "scope": "",
+            "timeline": "",
+        },
+    },
+}
 CHAT_AGENT_PROFILES: list[dict[str, str]] = [
     {
         "name": "Analyst",
@@ -456,6 +539,32 @@ class DocxToolGenerateResponse(BaseModel):
     filename: str
     model: str
     source: str
+
+
+class DocxTemplateSummary(BaseModel):
+    id: str
+    name: str
+    description: str
+    fields: list[str]
+
+
+class DocxTemplateListResponse(BaseModel):
+    templates: list[DocxTemplateSummary]
+
+
+class DocxTemplateResolveResponse(BaseModel):
+    template_id: str
+    template_xml: str
+    default_json_data: dict[str, Any]
+    fields: list[str]
+
+
+class DocxJsonStreamRequest(BaseModel):
+    template_id: str = Field(default="research_brief", min_length=1)
+    conversation_id: str | None = None
+    prompt: str | None = None
+    messages: list[ChatMessage] = Field(default_factory=list)
+    current_json_data: dict[str, Any] | None = None
 
 
 class SuperdocOpenRequest(BaseModel):
@@ -1098,6 +1207,87 @@ def _sanitize_docx_filename(raw_value: str) -> str:
     safe_stem = re.sub(r"[^a-z0-9]+", "-", raw_value.lower()).strip("-")
     safe_stem = safe_stem[:200].strip("-") or "simplescholar-draft"
     return f"{safe_stem}.docx"
+
+
+def _list_docx_templates() -> list[dict[str, Any]]:
+    templates = []
+    for template in DOCX_TEMPLATE_REGISTRY.values():
+        templates.append(
+            {
+                "id": str(template["id"]),
+                "name": str(template["name"]),
+                "description": str(template["description"]),
+                "fields": [str(field) for field in template.get("fields", [])],
+            }
+        )
+    return templates
+
+
+def _get_docx_template(template_id: str | None) -> dict[str, Any]:
+    resolved_id = (template_id or "research_brief").strip() or "research_brief"
+    template = DOCX_TEMPLATE_REGISTRY.get(resolved_id)
+    if not template:
+        available = ", ".join(DOCX_TEMPLATE_REGISTRY.keys())
+        raise HTTPException(status_code=400, detail=f"unknown template_id '{resolved_id}'. available={available}")
+    return template
+
+
+def _resolve_docx_template_payload(template_id: str | None) -> dict[str, Any]:
+    template = _get_docx_template(template_id)
+    return {
+        "template_id": str(template["id"]),
+        "template_xml": str(template["template_xml"]),
+        "default_json_data": dict(template.get("default_json_data", {})),
+        "fields": [str(field) for field in template.get("fields", [])],
+    }
+
+
+def _normalize_docx_template_json(
+    template: dict[str, Any],
+    payload: dict[str, Any] | None,
+    seed_text: str,
+) -> tuple[dict[str, Any], str]:
+    defaults = dict(template.get("default_json_data", {}))
+    merged = dict(defaults)
+    if isinstance(payload, dict):
+        merged.update({key: value for key, value in payload.items() if value is not None})
+
+    author = merged.get("author")
+    if isinstance(author, dict):
+        author_name = str(author.get("name") or "SimpleScholar AI").strip() or "SimpleScholar AI"
+        merged["author"] = {"name": author_name}
+    elif isinstance(author, str):
+        merged["author"] = {"name": author.strip() or "SimpleScholar AI"}
+    else:
+        merged["author"] = {"name": "SimpleScholar AI"}
+
+    title = str(merged.get("title") or _truncate_title(seed_text or "Draft")).strip() or "Draft"
+    merged["title"] = title
+    filename = _sanitize_docx_filename(title)
+    return merged, filename
+
+
+def _build_docx_template_json_prompt(
+    template: dict[str, Any],
+    seed_text: str,
+    source_messages: list[dict[str, str]],
+    current_json_data: dict[str, Any] | None,
+) -> str:
+    transcript_lines = [f"{item['role']}: {item['content']}" for item in source_messages if item.get("content")]
+    transcript = "\n".join(transcript_lines[-20:])
+    fields = ", ".join([str(field) for field in template.get("fields", [])]) or "title, author.name, body"
+    default_json = json.dumps(template.get("default_json_data", {}), ensure_ascii=False)
+    existing_json = json.dumps(current_json_data or {}, ensure_ascii=False)
+    return (
+        "Return only valid JSON. No markdown, no backticks, no commentary.\n"
+        f"Target template: {template.get('name')}\n"
+        f"Required fields: {fields}\n"
+        f"Default JSON shape: {default_json}\n"
+        f"Current JSON draft: {existing_json}\n"
+        f"Seed focus: {seed_text or 'general document'}\n\n"
+        "Use professional academic language, keep sections concise, and include practical outline detail.\n\n"
+        f"Transcript:\n{transcript}"
+    )
 
 
 def _normalize_docx_plan(payload: dict[str, Any], seed_text: str) -> tuple[str, dict[str, Any], str]:

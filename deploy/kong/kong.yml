@@ -1,0 +1,31 @@
+_format_version: "3.0"
+_transform: true
+
+services:
+  - name: scholarflow-api
+    url: http://backend:8000
+    connect_timeout: 30000
+    read_timeout: 360000
+    write_timeout: 360000
+    routes:
+      - name: api-route
+        paths:
+          - /api
+        strip_path: true
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 120
+          policy: local
+      - name: correlation-id
+        config:
+          header_name: X-Trace-Id
+          generator: uuid
+          echo_downstream: true
+
+  - name: scholarflow-frontend
+    url: http://frontend:80
+    routes:
+      - name: web-route
+        paths:
+          - /

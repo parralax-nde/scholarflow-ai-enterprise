@@ -37,6 +37,8 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "jaahas/qwen3.5-uncensored:2b-q6_K")
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "-1")
 SUPERDOC_MCP_URL = os.getenv("SUPERDOC_MCP_URL", "http://localhost:8090/mcp")
 MAX_CONTEXT_MESSAGES = int(os.getenv("MAX_CONTEXT_MESSAGES", "12"))
+FREE_PAGE_ALLOWANCE = int(os.getenv("FREE_PAGE_ALLOWANCE", "100"))
+PAGE_PRICE_USD = float(os.getenv("PAGE_PRICE_USD", "0.1"))
 CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path(gettempdir()) / "scholarflow" / "chat_history.db")))
 PALETTE_DB_PATH = Path(
     os.getenv("PALETTE_DB_PATH", str(Path(gettempdir()) / "scholarflow" / "color_palettes.json"))
@@ -322,7 +324,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="ScholarFlow AI Enterprise", lifespan=lifespan)
+app = FastAPI(title="SimpleScholar API", lifespan=lifespan)
 
 
 class RegisterServiceRequest(BaseModel):
@@ -995,7 +997,7 @@ def _ensure_superdoc_mcp_initialized() -> None:
         {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "scholarflow-backend", "version": "0.1.0"},
+            "clientInfo": {"name": "simplescholar-backend", "version": "0.1.0"},
         },
         include_session=False,
     )
@@ -1071,7 +1073,7 @@ def _default_docx_draft(seed_text: str) -> tuple[str, dict[str, Any], str]:
         title = _truncate_title(clean_seed)
     json_data = {
         "title": title,
-        "author": {"name": "ScholarFlow AI"},
+        "author": {"name": "SimpleScholar AI"},
         "abstract": clean_seed or "Initial auto-generated draft from the latest conversation.",
         "body": clean_seed or "Add findings, evidence, and next steps from the conversation.",
     }
@@ -1085,7 +1087,7 @@ def _default_docx_draft(seed_text: str) -> tuple[str, dict[str, Any], str]:
         "  <p>{{body}}</p>\n"
         "</doc>"
     )
-    filename = f"{re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-') or 'scholarflow-draft'}.docx"
+    filename = f"{re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-') or 'simplescholar-draft'}.docx"
     return template_xml, json_data, filename
 
 
@@ -1093,7 +1095,7 @@ def _normalize_docx_plan(payload: dict[str, Any], seed_text: str) -> tuple[str, 
     template_xml, json_data, filename = _default_docx_draft(seed_text)
 
     title = str(payload.get("title") or json_data["title"]).strip() or json_data["title"]
-    author_name = "ScholarFlow AI"
+    author_name = "SimpleScholar AI"
     author = payload.get("author")
     if isinstance(author, dict):
         author_name = str(author.get("name") or author_name).strip() or author_name

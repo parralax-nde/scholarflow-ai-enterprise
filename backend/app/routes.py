@@ -473,6 +473,14 @@ def billing_webhook(
     return {"ok": True, "user_id": user_id, "tier": subscriptions[user_id]}
 
 
+@app.get("/billing/pricing")
+def billing_pricing() -> dict[str, Any]:
+    return {
+        "free_pages": FREE_PAGE_ALLOWANCE,
+        "price_per_page_usd": PAGE_PRICE_USD,
+    }
+
+
 @app.get("/admin/service-health")
 def admin_service_health() -> dict[str, Any]:
     return {

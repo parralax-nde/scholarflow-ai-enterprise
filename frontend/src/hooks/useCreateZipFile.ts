@@ -4,7 +4,7 @@ import { useAppSelector } from 'store/store-hooks';
 
 import { hexToRgb } from '@/utils/colorUtils';
 
-const BASE_URL = 'https://realtimecolors.com';
+const BASE_URL = 'https://simplescholar.ai';
 
 const useCreateZipFile = () => {
   const [isDownloaded, setIsDownloaded] = useState(false);
@@ -67,9 +67,9 @@ Accent: ${colors.accentColor.color} (${formatRgb(
     )})
 
 
-Realtime Colors link for selected colors: ${BASE_URL}/?colors=${colorsAsUrl}
+SimpleScholar theme link for selected colors: ${BASE_URL}/?colors=${colorsAsUrl}
 
-Thanks for using RealtimeColors.com!
+Thanks for using SimpleScholar!
 `;
 
     zipFile.file(`${fileName}-codes.txt`, txtFile);

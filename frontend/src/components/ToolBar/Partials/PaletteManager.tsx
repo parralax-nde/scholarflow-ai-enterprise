@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { setColors } from 'state/globalSlice';
 import { useAppDispatch, useAppSelector } from 'store/store-hooks';
 
+import { toApiUrl } from '@/lib/api';
+
 type SavedPalette = {
   id: string;
   name: string;
@@ -9,9 +11,6 @@ type SavedPalette = {
   created_at: string;
   updated_at: string;
 };
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000/api';
 
 const PaletteManager: React.FC = (): JSX.Element => {
   const dispatch = useAppDispatch();
@@ -28,7 +27,7 @@ const PaletteManager: React.FC = (): JSX.Element => {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/colors/palettes`);
+      const response = await fetch(toApiUrl('/colors/palettes'));
       if (!response.ok) throw new Error('Failed to load palettes');
       const payload = (await response.json()) as SavedPalette[];
       setPalettes(payload);
@@ -44,7 +43,7 @@ const PaletteManager: React.FC = (): JSX.Element => {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/colors/palettes`, {
+      const response = await fetch(toApiUrl('/colors/palettes'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name.trim(), colors }),
@@ -62,7 +61,7 @@ const PaletteManager: React.FC = (): JSX.Element => {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/colors/palettes/${paletteId}`, {
+      const response = await fetch(toApiUrl(`/colors/palettes/${paletteId}`), {
         method: 'DELETE',
       });
       if (!response.ok) throw new Error('Failed to delete palette');

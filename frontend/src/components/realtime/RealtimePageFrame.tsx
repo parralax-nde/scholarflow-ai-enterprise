@@ -1,9 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import React from 'react';
+import { usePathname } from 'next/navigation';
+import React, { useEffect, useMemo, useState } from 'react';
 
 import useOnLoad from '@/hooks/useOnload';
+import { clearAuthSession, readAuthSession } from '@/lib/auth';
 
 import ToolBar from '@/components/ToolBar/ToolBar';
 
@@ -12,14 +14,64 @@ type RealtimePageFrameProps = {
 };
 
 const navLinks = [
-  { href: '/chat', label: 'Chat' },
-  { href: '/login', label: 'Login' },
-  { href: '/signup', label: 'Sign Up' },
+  { href: '/chat', label: 'Workspace' },
+  { href: '/', label: 'Features' },
   { href: '/privacy-policy', label: 'Privacy' },
 ];
 
+const pageTitleByPath: Record<string, string> = {
+  '/': 'SimpleScholar — AI Research Copilot',
+  '/chat': 'Workspace | SimpleScholar',
+  '/login': 'Login | SimpleScholar',
+  '/signup': 'Create account | SimpleScholar',
+  '/forgot-password': 'Recover account | SimpleScholar',
+  '/privacy-policy': 'Privacy Policy | SimpleScholar',
+  '/terms-of-use': 'Terms of Use | SimpleScholar',
+  '/data-removal-policy': 'Data Removal Policy | SimpleScholar',
+};
+
 export default function RealtimePageFrame({ children }: RealtimePageFrameProps) {
   const { colors, handleCloseColorPickers } = useOnLoad();
+  const pathname = usePathname();
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  useEffect(() => {
+    const session = readAuthSession();
+    setIsAuthenticated(Boolean(session?.access_token));
+  }, [pathname]);
+
+  useEffect(() => {
+    const title = pageTitleByPath[pathname] || 'SimpleScholar';
+    document.title = title;
+  }, [pathname]);
+
+  const authAction = useMemo(() => {
+    if (isAuthenticated) {
+      return (
+        <button
+          type='button'
+          className='border px-3 py-1.5 text-sm transition-opacity hover:opacity-80'
+          style={{ borderColor: `${colors.secondaryColor.color}80` }}
+          onClick={() => {
+            clearAuthSession();
+            setIsAuthenticated(false);
+          }}
+        >
+          Log out
+        </button>
+      );
+    }
+
+    return (
+      <Link
+        href='/login'
+        className='border px-3 py-1.5 text-sm transition-opacity hover:opacity-80'
+        style={{ borderColor: `${colors.secondaryColor.color}80` }}
+      >
+        Login
+      </Link>
+    );
+  }, [colors.secondaryColor.color, isAuthenticated]);
 
   return (
     <main
@@ -35,9 +87,12 @@ export default function RealtimePageFrame({ children }: RealtimePageFrameProps) 
       </div>
 
       <div className='mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-7xl flex-col'>
-        <header className='mb-8 flex flex-wrap items-center justify-between gap-4 border-b pb-4' style={{ borderColor: `${colors.secondaryColor.color}55` }}>
+        <header
+          className='mb-8 flex flex-wrap items-center justify-between gap-4 border-b pb-4'
+          style={{ borderColor: `${colors.secondaryColor.color}55` }}
+        >
           <Link href='/' className='text-2xl font-semibold'>
-            ScholarFlow AI
+            SimpleScholar
           </Link>
           <nav className='flex flex-wrap items-center gap-2'>
             {navLinks.map((item) => (
@@ -50,6 +105,7 @@ export default function RealtimePageFrame({ children }: RealtimePageFrameProps) 
                 {item.label}
               </Link>
             ))}
+            {authAction}
           </nav>
         </header>
 

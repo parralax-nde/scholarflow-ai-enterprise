@@ -1,9 +1,12 @@
 'use client';
 
+import Link from 'next/link';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAppSelector } from 'store/store-hooks';
 
 import RealtimePageFrame from '@/components/realtime/RealtimePageFrame';
+import { readAuthSession } from '@/lib/auth';
+import { toApiUrl } from '@/lib/api';
 
 type Conversation = {
   id: string;
@@ -19,26 +22,65 @@ type Message = {
   created_at?: string;
 };
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000/api';
+type DocxSession = {
+  docx_id: string;
+  filename: string;
+  viewer_path: string;
+};
+
+type AuthUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: 'free' | 'enterprise' | string;
+};
+
+const normalizeError = (err: unknown) => {
+  const message = (err as Error)?.message || 'Unknown error';
+  if (/failed to fetch/i.test(message)) {
+    return 'Failed to fetch service. Confirm backend/API gateway is reachable.';
+  }
+  return message;
+};
 
 export default function ChatPage() {
   const colors = useAppSelector((state) => state.global.colors);
 
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(
+    null
+  );
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [assistantDraft, setAssistantDraft] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [isGeneratingDocx, setIsGeneratingDocx] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [guestMessageUsed, setGuestMessageUsed] = useState(false);
+  const [docxSession, setDocxSession] = useState<DocxSession | null>(null);
+  const [docxEditContent, setDocxEditContent] = useState('');
+  const [docxRefreshKey, setDocxRefreshKey] = useState(0);
+
+  const isAuthenticated = Boolean(authUser);
+
+  useEffect(() => {
+    const session = readAuthSession();
+    setAuthUser((session?.user as AuthUser) ?? null);
+  }, []);
 
   const activeConversation = useMemo(
     () => conversations.find((item) => item.id === activeConversationId) ?? null,
     [conversations, activeConversationId]
   );
 
+  const latestAssistantMessage = useMemo(
+    () => [...messages].reverse().find((item) => item.role === 'assistant')?.content ?? '',
+    [messages]
+  );
+
   const createConversation = useCallback(async () => {
-    const response = await fetch(`${API_BASE_URL}/ai/conversations`, {
+    const response = await fetch(toApiUrl('/ai/conversations'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: 'New chat' }),
@@ -50,7 +92,7 @@ export default function ChatPage() {
   }, []);
 
   const loadConversations = useCallback(async () => {
-    const response = await fetch(`${API_BASE_URL}/ai/conversations`);
+    const response = await fetch(toApiUrl('/ai/conversations'));
     if (!response.ok) {
       throw new Error('Unable to load conversations');
     }
@@ -68,12 +110,15 @@ export default function ChatPage() {
   }, [createConversation]);
 
   const loadMessages = useCallback(async (conversationId: string) => {
-    const response = await fetch(`${API_BASE_URL}/ai/conversations/${conversationId}/messages`);
+    const response = await fetch(toApiUrl(`/ai/conversations/${conversationId}/messages`));
     if (!response.ok) {
       throw new Error('Unable to load messages');
     }
     const payload = (await response.json()) as { messages: Message[] };
     setMessages(payload.messages ?? []);
+    setGuestMessageUsed(
+      (payload.messages ?? []).some((message) => message.role === 'user')
+    );
   }, []);
 
   useEffect(() => {
@@ -81,7 +126,7 @@ export default function ChatPage() {
       try {
         await loadConversations();
       } catch (err) {
-        setError((err as Error).message);
+        setError(normalizeError(err));
       }
     })();
   }, [loadConversations]);
@@ -92,29 +137,44 @@ export default function ChatPage() {
       try {
         await loadMessages(activeConversationId);
       } catch (err) {
-        setError((err as Error).message);
+        setError(normalizeError(err));
       }
     })();
   }, [activeConversationId, loadMessages]);
 
   const handleNewConversation = async () => {
+    if (!isAuthenticated) {
+      setError('Login required to create additional conversations.');
+      return;
+    }
+
     try {
       const created = await createConversation();
       setConversations((prev) => [created, ...prev]);
       setActiveConversationId(created.id);
       setMessages([]);
       setAssistantDraft('');
+      setDocxSession(null);
+      setGuestMessageUsed(false);
       setError(null);
     } catch (err) {
-      setError((err as Error).message);
+      setError(normalizeError(err));
     }
   };
 
   const handleSend = async () => {
     const trimmed = input.trim();
     if (!trimmed || !activeConversationId || isSending) return;
+    if (!isAuthenticated && guestMessageUsed) {
+      setError('Guest mode allows one AI reply only. Please login to continue.');
+      return;
+    }
 
-    const userMessage: Message = { role: 'user', content: trimmed, id: `local-${Date.now()}` };
+    const userMessage: Message = {
+      role: 'user',
+      content: trimmed,
+      id: `local-${Date.now()}`,
+    };
     const outboundMessages = [...messages, userMessage].map((item) => ({
       role: item.role,
       content: item.content,
@@ -130,7 +190,7 @@ export default function ChatPage() {
     let hasTokenEvent = false;
 
     try {
-      const response = await fetch(`${API_BASE_URL}/ai/chat/stream`, {
+      const response = await fetch(toApiUrl('/ai/chat/stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -163,55 +223,177 @@ export default function ChatPage() {
           const line = rawLine.trim();
           if (!line) continue;
 
-          let event: { type?: string; content?: string; error?: string };
+          let event: {
+            type?: string;
+            content?: string;
+            error?: string;
+            conversation_id?: string;
+          };
           try {
             event = JSON.parse(line) as {
               type?: string;
               content?: string;
               error?: string;
+              conversation_id?: string;
             };
           } catch {
             throw new Error('Malformed streaming response payload');
+          }
+
+          if (event.type === 'meta' && event.conversation_id) {
+            setActiveConversationId(event.conversation_id);
+            continue;
           }
 
           if (event.type === 'error') {
             throw new Error(event.error || 'Streaming failed');
           }
 
-            if (event.type === 'token') {
-              const delta = event.content ?? '';
-              if (!delta) continue;
-              hasTokenEvent = true;
-              assistantContent += delta;
-              setAssistantDraft(assistantContent);
-              continue;
-            }
+          if (event.type === 'token') {
+            const delta = event.content ?? '';
+            if (!delta) continue;
+            hasTokenEvent = true;
+            assistantContent += delta;
+            setAssistantDraft(assistantContent);
+            continue;
+          }
 
-            if (event.type === 'agent_delta' && !hasTokenEvent) {
-              const delta = event.content ?? '';
-              if (!delta) continue;
-              assistantContent += delta;
-              setAssistantDraft(assistantContent);
-            }
+          if (event.type === 'agent_delta' && !hasTokenEvent) {
+            const delta = event.content ?? '';
+            if (!delta) continue;
+            assistantContent += delta;
+            setAssistantDraft(assistantContent);
           }
         }
+      }
 
       if (assistantContent.trim()) {
-        setMessages((prev) => [...prev, { role: 'assistant', content: assistantContent, id: `assistant-${Date.now()}` }]);
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: assistantContent, id: `assistant-${Date.now()}` },
+        ]);
+      }
+
+      if (!isAuthenticated) {
+        setGuestMessageUsed(true);
       }
 
       setAssistantDraft('');
       await loadConversations();
     } catch (err) {
-      setError((err as Error).message);
+      setError(normalizeError(err));
     } finally {
       setIsSending(false);
     }
   };
 
+  const handleGenerateDocx = async () => {
+    if (!messages.length || !activeConversationId || isGeneratingDocx) return;
+    setIsGeneratingDocx(true);
+    setError(null);
+
+    try {
+      const draftResponse = await fetch(toApiUrl('/ai/mcp/tools/docx/generate'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: activeConversationId,
+          messages: messages.map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+        }),
+      });
+      if (!draftResponse.ok) throw new Error('Unable to generate DOCX draft');
+      const draftPayload = (await draftResponse.json()) as {
+        template_xml: string;
+        json_data: Record<string, unknown>;
+        filename: string;
+      };
+
+      const sessionResponse = await fetch(toApiUrl('/export/docx/session'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          template_xml: draftPayload.template_xml,
+          json_data: draftPayload.json_data,
+          filename: draftPayload.filename,
+        }),
+      });
+      if (!sessionResponse.ok) throw new Error('Unable to initialize DOCX viewer');
+      const sessionPayload = (await sessionResponse.json()) as DocxSession;
+      setDocxSession(sessionPayload);
+      setDocxRefreshKey((prev) => prev + 1);
+    } catch (err) {
+      setError(normalizeError(err));
+    } finally {
+      setIsGeneratingDocx(false);
+    }
+  };
+
+  const handleCopyAssistantText = async () => {
+    if (!isAuthenticated) {
+      setError('Login is required before copying generated output.');
+      return;
+    }
+    if (!latestAssistantMessage) return;
+    await navigator.clipboard.writeText(latestAssistantMessage);
+  };
+
+  const handleDownloadDocx = () => {
+    if (!isAuthenticated) {
+      setError('Login is required before downloading documents.');
+      return;
+    }
+    if (!docxSession) return;
+    window.open(toApiUrl(`/export/docx/files/${docxSession.docx_id}`), '_blank', 'noopener,noreferrer');
+  };
+
+  const handleAppendToDocx = async () => {
+    if (!isAuthenticated) {
+      setError('Login is required before editing documents.');
+      return;
+    }
+    if (!docxSession || !docxEditContent.trim()) return;
+
+    try {
+      const response = await fetch(toApiUrl('/ai/mcp/superdoc/apply'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          docx_id: docxSession.docx_id,
+          content: docxEditContent.trim(),
+          suggest: false,
+        }),
+      });
+      if (!response.ok) throw new Error('Unable to apply edit to DOCX');
+      setDocxEditContent('');
+      setDocxRefreshKey((prev) => prev + 1);
+    } catch (err) {
+      setError(normalizeError(err));
+    }
+  };
+
   return (
     <RealtimePageFrame>
-      <section className='grid min-h-[calc(100vh-12rem)] gap-4 lg:grid-cols-[300px_1fr]'>
+      {!isAuthenticated && (
+        <div
+          className='mb-4 rounded-xl border px-4 py-3 text-sm'
+          style={{
+            borderColor: `${colors.accentColor.color}66`,
+            backgroundColor: `${colors.accentColor.color}16`,
+          }}
+        >
+          Guest mode: one free AI reply is enabled. Continue chatting, editing, copying,
+          and downloading after{' '}
+          <Link href='/login' className='font-semibold underline'>
+            login
+          </Link>
+          .
+        </div>
+      )}
+
+      <section className='grid min-h-[calc(100vh-12rem)] gap-4 xl:grid-cols-[300px_1fr_1fr]'>
         <aside
           className='rounded-2xl border p-4 backdrop-blur'
           style={{
@@ -221,23 +403,28 @@ export default function ChatPage() {
         >
           <button
             type='button'
-            className='mb-3 w-full rounded-xl border px-3 py-2 text-sm font-medium transition-opacity hover:opacity-90'
+            className='mb-3 w-full rounded-xl border px-3 py-2 text-sm font-medium transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60'
             style={{
               backgroundColor: colors.primaryColor.color as string,
               color: colors.backgroundColor.color as string,
               borderColor: `${colors.primaryColor.color}CC`,
             }}
             onClick={handleNewConversation}
+            disabled={!isAuthenticated}
           >
             + New chat
           </button>
+
+          {!isAuthenticated && (
+            <p className='mb-3 text-xs opacity-75'>Login to access multi-chat history.</p>
+          )}
 
           <div className='max-h-[calc(100vh-20rem)] space-y-2 overflow-y-auto'>
             {conversations.map((conversation) => (
               <button
                 key={conversation.id}
                 type='button'
-                className='w-full rounded-xl border px-3 py-2 text-left text-sm transition-all'
+                className='w-full rounded-xl border px-3 py-2 text-left text-sm transition-all disabled:cursor-not-allowed'
                 style={{
                   borderColor:
                     activeConversationId === conversation.id
@@ -249,6 +436,7 @@ export default function ChatPage() {
                       : `${colors.backgroundColor.color}55`,
                 }}
                 onClick={() => setActiveConversationId(conversation.id)}
+                disabled={!isAuthenticated && conversation.id !== activeConversationId}
               >
                 <p className='truncate font-medium'>{conversation.title}</p>
                 <p className='text-xs opacity-75'>{conversation.message_count} messages</p>
@@ -268,8 +456,16 @@ export default function ChatPage() {
             className='flex items-center justify-between border-b px-5 py-3'
             style={{ borderColor: `${colors.secondaryColor.color}55` }}
           >
-            <h1 className='text-lg font-semibold'>{activeConversation?.title ?? 'Chat'}</h1>
-            <p className='text-xs opacity-70'>Realtime token streaming</p>
+            <h1 className='text-lg font-semibold'>{activeConversation?.title ?? 'Workspace'}</h1>
+            <button
+              type='button'
+              className='rounded-xl border px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60'
+              style={{ borderColor: `${colors.secondaryColor.color}70` }}
+              onClick={() => void handleGenerateDocx()}
+              disabled={isGeneratingDocx || messages.length === 0}
+            >
+              {isGeneratingDocx ? 'Generating DOCX…' : 'Generate DOCX'}
+            </button>
           </header>
 
           <div className='flex-1 space-y-4 overflow-y-auto px-5 py-5'>
@@ -309,10 +505,13 @@ export default function ChatPage() {
           {error && <p className='px-4 pb-2 text-sm text-red-500'>{error}</p>}
 
           <div className='border-t p-4' style={{ borderColor: `${colors.secondaryColor.color}55` }}>
-            <div className='flex gap-2 rounded-2xl border p-2' style={{ borderColor: `${colors.secondaryColor.color}50` }}>
+            <div
+              className='flex gap-2 rounded-2xl border p-2'
+              style={{ borderColor: `${colors.secondaryColor.color}50` }}
+            >
               <input
                 className='w-full bg-transparent px-3 py-2 text-sm outline-none'
-                placeholder='Message ScholarFlow…'
+                placeholder='Message SimpleScholar…'
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={(event) => {
@@ -327,8 +526,8 @@ export default function ChatPage() {
                 onClick={() => {
                   void handleSend();
                 }}
-                disabled={isSending}
-                className='rounded-xl border px-4 py-2 text-sm font-medium disabled:opacity-60'
+                disabled={isSending || (!isAuthenticated && guestMessageUsed)}
+                className='rounded-xl border px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60'
                 style={{
                   backgroundColor: colors.primaryColor.color as string,
                   color: colors.backgroundColor.color as string,
@@ -340,6 +539,79 @@ export default function ChatPage() {
             </div>
           </div>
         </div>
+
+        <aside
+          className='flex min-h-0 flex-col rounded-2xl border'
+          style={{
+            borderColor: `${colors.secondaryColor.color}55`,
+            backgroundColor: `${colors.backgroundColor.color}C2`,
+          }}
+        >
+          <header
+            className='flex items-center justify-between gap-2 border-b px-4 py-3'
+            style={{ borderColor: `${colors.secondaryColor.color}55` }}
+          >
+            <h2 className='text-sm font-semibold'>DOCX Preview</h2>
+            <div className='flex items-center gap-2'>
+              <button
+                type='button'
+                className='rounded-lg border px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-60'
+                style={{ borderColor: `${colors.secondaryColor.color}70` }}
+                onClick={() => void handleCopyAssistantText()}
+                disabled={!isAuthenticated || !latestAssistantMessage}
+              >
+                Copy
+              </button>
+              <button
+                type='button'
+                className='rounded-lg border px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-60'
+                style={{ borderColor: `${colors.secondaryColor.color}70` }}
+                onClick={handleDownloadDocx}
+                disabled={!isAuthenticated || !docxSession}
+              >
+                Download
+              </button>
+            </div>
+          </header>
+
+          <div className='flex-1 overflow-hidden'>
+            {docxSession ? (
+              <iframe
+                title='SimpleScholar DOCX preview'
+                src={`${docxSession.viewer_path}?v=${docxRefreshKey}`}
+                className='h-full min-h-[380px] w-full border-0'
+              />
+            ) : (
+              <div className='flex h-full min-h-[380px] items-center justify-center px-6 text-center text-sm opacity-75'>
+                Generate a DOCX draft from the conversation to preview it here.
+              </div>
+            )}
+          </div>
+
+          <div className='border-t p-3' style={{ borderColor: `${colors.secondaryColor.color}55` }}>
+            <p className='mb-2 text-xs opacity-80'>Append notes to DOCX (login required)</p>
+            <textarea
+              value={docxEditContent}
+              onChange={(event) => setDocxEditContent(event.target.value)}
+              className='mb-2 h-20 w-full resize-none rounded-lg border bg-transparent px-2 py-1 text-xs outline-none'
+              style={{ borderColor: `${colors.secondaryColor.color}70` }}
+              placeholder='Add reviewer notes or summary...'
+              disabled={!isAuthenticated}
+            />
+            <button
+              type='button'
+              className='w-full rounded-lg border px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60'
+              style={{
+                borderColor: colors.primaryColor.color as string,
+                backgroundColor: `${colors.primaryColor.color}20`,
+              }}
+              onClick={() => void handleAppendToDocx()}
+              disabled={!isAuthenticated || !docxSession || !docxEditContent.trim()}
+            >
+              Apply to DOCX
+            </button>
+          </div>
+        </aside>
       </section>
     </RealtimePageFrame>
   );

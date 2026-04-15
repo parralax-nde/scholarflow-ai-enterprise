@@ -264,14 +264,14 @@ async def ai_docx_json_stream(body: DocxJsonStreamRequest) -> StreamingResponse:
                 "model": OLLAMA_MODEL,
             }
         ) + "\n"
-        json_parts: list[str] = []
+        json_token_buffer: list[str] = []
         try:
             yield json.dumps({"type": "meta", "phase": "streaming"}) + "\n"
             async for token in _stream_chat_with_langchain(context):
-                json_parts.append(token)
+                json_token_buffer.append(token)
                 yield json.dumps({"type": "json_token", "content": token}) + "\n"
 
-            parsed = _extract_json_object("".join(json_parts))
+            parsed = _extract_json_object("".join(json_token_buffer))
             normalized_json, filename = _normalize_docx_template_json(template, parsed, seed_text)
             yield json.dumps(
                 {

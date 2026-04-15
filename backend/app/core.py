@@ -1206,6 +1206,7 @@ def _default_docx_draft(seed_text: str) -> tuple[str, dict[str, Any], str]:
 
 
 def _sanitize_docx_filename(raw_value: str) -> str:
+    raw_value = raw_value.replace("/", " ").replace("\\", " ")
     safe_stem = re.sub(r"[^a-z0-9]+", "-", raw_value.lower()).strip("-")
     safe_stem = safe_stem[:MAX_DOCX_FILENAME_STEM_LENGTH].strip("-") or "simplescholar-draft"
     return f"{safe_stem}.docx"
